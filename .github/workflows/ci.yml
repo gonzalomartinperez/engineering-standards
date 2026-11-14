@@ -31,7 +31,7 @@ jobs:
       contents: read
     with:
       lychee-args: "--offline --no-progress --include-fragments --exclude-path standard --exclude-path templates/readme './**/*.md'"
-      readme-check: false
+      readme-check: true
 
   security:
     needs: classify
