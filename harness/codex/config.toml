@@ -1,0 +1,21 @@
+# .codex/config.toml template from engineering-standards (ecosystem 15.6).
+# Validate against the installed Codex version before committing (`codex --version`; keys change
+# between releases). No secrets and no MCP servers that need tokens.
+
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = false
+
+[features]
+hooks = true
+
+# Same guard hooks as Claude Code; both scripts read the tool event as JSON on stdin and exit 2 to block.
+[[hooks.pre_tool_use]]
+matcher = "shell"
+command = ["python3", "-I", ".claude/hooks/guard-bash.py"]
+
+[[hooks.pre_tool_use]]
+matcher = "apply_patch"
+command = ["python3", "-I", ".claude/hooks/guard-files.py"]
