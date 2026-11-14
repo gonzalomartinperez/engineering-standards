@@ -1,0 +1,77 @@
+# Composite action: Python via uv with the lockfile-keyed uv cache and a locked sync (ecosystem 6.1, 7).
+#
+#   - uses: gonzalomartinperez/engineering-standards/actions/setup-python-uv@<sha> # vX.Y.Z
+#     with:
+#       python-version-file: .python-version
+#
+# `uv sync --locked` fails when uv.lock is out of date; `exclude-newer` stays in pyproject (7 days).
+name: setup-python-uv
+description: Set up uv and Python, restore the uv cache keyed on uv.lock and run uv sync --locked.
+inputs:
+  python-version:
+    description: Python version (ignored when python-version-file exists and this is empty).
+    required: false
+    default: ""
+  python-version-file:
+    description: File holding the Python version.
+    required: false
+    default: .python-version
+  uv-version:
+    description: uv version to install (pin for reproducibility).
+    required: false
+    default: "0.12.10"
+  working-directory:
+    description: Directory that holds pyproject.toml and uv.lock.
+    required: false
+    default: "."
+  sync:
+    description: Run uv sync --locked after setup.
+    required: false
+    default: "true"
+  sync-args:
+    description: Extra arguments for uv sync (for example --all-groups or --no-dev).
+    required: false
+    default: "--all-groups"
+outputs:
+  python-version:
+    description: Python version selected by uv.
+    value: ${{ steps.python.outputs.version }}
+  cache-hit:
+    description: Whether the uv cache was restored.
+    value: ${{ steps.uv.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Set up uv
+      id: uv
+      uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      with:
+        version: ${{ inputs.uv-version }}
+        python-version: ${{ inputs.python-version }}
+        enable-cache: true
+        cache-dependency-glob: ${{ inputs.working-directory }}/uv.lock
+        working-directory: ${{ inputs.working-directory }}
+    - name: Install Python
+      id: python
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PY_VERSION: ${{ inputs.python-version }}
+        PY_FILE: ${{ inputs.python-version-file }}
+      run: |
+        # An explicit version is exported as UV_PYTHON by setup-uv; otherwise uv reads the version file.
+        if [ -z "$PY_VERSION" ] && [ ! -f "$PY_FILE" ]; then
+          echo "::error title=setup-python-uv::set python-version or provide $PY_FILE"
+          exit 1
+        fi
+        uv python install
+        echo "version=$(uv run --no-project python -c 'import platform; print(platform.python_version())')" >> "$GITHUB_OUTPUT"
+    - name: uv sync --locked
+      if: inputs.sync == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        SYNC_ARGS: ${{ inputs.sync-args }}
+      run: |
+        # shellcheck disable=SC2086 # SYNC_ARGS is a space-separated argument list by design
+        uv sync --locked $SYNC_ARGS

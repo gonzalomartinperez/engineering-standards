@@ -71,6 +71,8 @@ runs:
                 else:
                     verdict, ok = "FAIL", False
                 lines.append(f"| `{job}` | {result} | {verdict} |")
+            for job in sorted({str(j) for j in expected} - set(needs)):
+                lines.append(f"| `{job}` | not a job in needs (selected by classify) | warning |")
             missing = sorted(required - set(needs))
             for job in missing:
                 ok = False

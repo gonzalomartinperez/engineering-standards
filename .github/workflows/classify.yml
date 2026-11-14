@@ -7,8 +7,8 @@
 # A missing or invalid profile map FAILS this job, so `ci-gate` goes red instead of skipping work.
 # push, schedule, workflow_dispatch and merge_group runs always run everything (safe-point rule 3A;
 # a merge-queue run has no labels, so branch and label profiles cannot be evaluated there).
-# Callers should trigger on `pull_request: types: [opened, synchronize, reopened, labeled, unlabeled]`
-# so label-driven profiles (deps-weekly, release) re-evaluate when a label changes.
+# Callers should trigger on `pull_request: types: [opened, synchronize, reopened, labeled, unlabeled, edited]`
+# so label- and base-driven profiles (deps-weekly, release) re-evaluate when a label or the base changes.
 #
 # Caller (job level, pinned by SHA):
 #   classify:

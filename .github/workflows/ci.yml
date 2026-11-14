@@ -4,7 +4,7 @@ name: ci
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
   push:
     branches: [main]
   merge_group:
@@ -23,23 +23,23 @@ jobs:
       contents: read
       pull-requests: read
 
-  markdown:
+  docs:
     needs: classify
-    if: contains(fromJSON(needs.classify.outputs.jobs), 'markdown')
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    if: contains(fromJSON(needs.classify.outputs.jobs), 'docs')
+    uses: ./.github/workflows/docs.yml
     permissions:
       contents: read
-    steps:
-      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
-        with:
-          egress-policy: audit
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0
-        with:
-          globs: "**/*.md"
+    with:
+      lychee-args: "--offline --no-progress --include-fragments --exclude-path standard './**/*.md'"
+      readme-check: false
+
+  security:
+    needs: classify
+    if: contains(fromJSON(needs.classify.outputs.jobs), 'security')
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+      pull-requests: read
 
   lint:
     needs: classify
@@ -128,6 +128,19 @@ jobs:
           OUTCOME: ${{ steps.gate-negative.outcome }}
           OUTCOME_EXPECTED: ${{ steps.gate-expected.outcome }}
         run: test "$OUTCOME" = "failure" && test "$OUTCOME_EXPECTED" = "failure"
+      - name: setup-node on the fixture
+        uses: ./actions/setup-node
+        with:
+          working-directory: tests/fixtures/node
+      - name: Assert node_modules installed without scripts
+        run: test -f tests/fixtures/node/node_modules/semver/package.json
+      - name: setup-python-uv on the fixture
+        uses: ./actions/setup-python-uv
+        with:
+          working-directory: tests/fixtures/python
+      - name: Assert the locked environment works
+        working-directory: tests/fixtures/python
+        run: uv run --locked python -c "import packaging; print(packaging.__version__)"
       - name: Assert classify produced a profile
         env:
           PROFILE: ${{ needs.classify.outputs.profile }}
@@ -138,7 +151,7 @@ jobs:
 
   ci-gate:
     if: always()
-    needs: [classify, markdown, lint, test, self-test]
+    needs: [classify, docs, security, lint, test, self-test]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions:
