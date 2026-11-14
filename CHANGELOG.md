@@ -5,8 +5,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-11-14
+
+First release consumed by the ecosystem repositories (M1, decision E1). Adoption guide:
+`docs/how-to/adopt.md`.
+
 ### Added
 
+- Ecosystem tracker `progress/ecosystem.md` with resume instructions; ADRs 0001 (ci-gate composite and embedded, tested logic), 0002 (Dependabot weekly group sandbox proof, E2) and 0003 (release automation without release-please); adoption and CodeQL guides; `release.yml` that tags `vX.Y.Z` from `VERSION` and the CHANGELOG; README on the ecosystem template, checked by the docs workflow; placeholders for design tokens (M5) and eval tooling (M2).
 - `classify` reusable workflow: CI profiles from changed files, branch and labels using the caller's `.github/ci-profile.json`; fail-closed (ecosystem 6.0).
 - `ci-gate` composite action: the single required check, fail-closed aggregation of `needs`.
 - `security` reusable workflow: zizmor, actionlint, gitleaks and dependency-review (licence allow-list) on PRs.
@@ -22,3 +28,6 @@ All notable changes to this project are documented here. The format follows
 - Harness assets (ecosystem 15): `guard-bash` and `guard-files` hooks (pkill -f, force pushes to protected branches, `.env` and key reads, lockfile hand edits, destructive git/docker/SQL), agent definitions (reviewer, architecture-reviewer, designer-evaluator, test-runner, docs-updater), `.claude/settings.json` and `.codex/config.toml` templates, the seven core skills with trigger and output evals, `check-skills` validator and the activation-evals scorer skeleton.
 - Own CI with self-tests of the reusable workflow and action, and unit tests for the classify and gate logic and the workflow hardening policy.
 - Repository bootstrap: license, community files, PR and issue templates, Dependabot weekly group, lint configuration.
+
+[Unreleased]: https://github.com/gonzalomartinperez/engineering-standards/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/gonzalomartinperez/engineering-standards/releases/tag/v1.0.0
