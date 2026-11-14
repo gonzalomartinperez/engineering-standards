@@ -243,8 +243,8 @@ jobs:
               for name, spec in profiles.items():
                   if not isinstance(spec, dict):
                       raise ValueError(f"profile {name} must be an object")
-                  if not spec.get("paths") and not spec.get("match") and name not in DEFAULT_MATCH:
-                      raise ValueError(f"profile {name} has neither paths nor match conditions")
+                  if not any(spec.get(k) for k in ("paths", "match", "trigger")) and name not in DEFAULT_MATCH:
+                      raise ValueError(f"profile {name} has no paths, match conditions or trigger")
               if not isinstance(config.get("base", []), list):
                   raise ValueError("'base' must be a list")
               return config

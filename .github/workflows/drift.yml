@@ -1,0 +1,83 @@
+# Reusable workflow: fail when an adopter's standard files drift from the pinned release (ecosystem 16).
+#
+#   drift:
+#     uses: gonzalomartinperez/engineering-standards/.github/workflows/drift.yml@<sha> # vX.Y.Z
+#     permissions:
+#       contents: read
+#
+# Reads the caller's standards.lock, checks out engineering-standards at the locked commit (and
+# verifies the locked tag points to it), then runs tools/standards_drift.py from that release:
+# byte-matched files, the Dependabot policy and the standards workflow pins.
+name: drift
+
+on:
+  workflow_call:
+    inputs:
+      lock-path:
+        description: Path of the lock file in the caller repository.
+        type: string
+        default: standards.lock
+
+permissions: {}
+
+jobs:
+  drift:
+    name: standards-drift
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Read the lock
+        id: lock
+        shell: python
+        env:
+          LOCK_PATH: ${{ inputs.lock-path }}
+        run: |
+          import json, os, re, sys
+          try:
+              with open(os.environ["LOCK_PATH"], encoding="utf-8") as fh:
+                  std = json.load(fh)["standards"]
+          except Exception as exc:  # noqa: BLE001
+              print(f"::error title=standards-drift::cannot read {os.environ['LOCK_PATH']}: {exc}")
+              sys.exit(2)
+          tag, commit = str(std.get("tag", "")), str(std.get("commit", ""))
+          if not re.fullmatch(r"v\d+\.\d+\.\d+", tag) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+              print("::error title=standards-drift::standards.tag must be vX.Y.Z and standards.commit a full SHA")
+              sys.exit(2)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write(f"tag={tag}\ncommit={commit}\n")
+      - name: Check out the pinned standards release
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gonzalomartinperez/engineering-standards
+          ref: ${{ steps.lock.outputs.commit }}
+          path: .standards
+          persist-credentials: false
+      - name: Verify the tag points to the locked commit
+        env:
+          TAG: ${{ steps.lock.outputs.tag }}
+          COMMIT: ${{ steps.lock.outputs.commit }}
+        run: |
+          remote=$(git ls-remote https://github.com/gonzalomartinperez/engineering-standards.git "refs/tags/${TAG}^{}" "refs/tags/${TAG}" | awk '{print $1}' | head -n 1)
+          peeled=$(git ls-remote https://github.com/gonzalomartinperez/engineering-standards.git "refs/tags/${TAG}^{}" | awk '{print $1}')
+          actual="${peeled:-$remote}"
+          if [ "$actual" != "$COMMIT" ]; then
+            echo "::error title=standards-drift::tag $TAG resolves to ${actual:-nothing}, standards.lock pins $COMMIT"
+            exit 1
+          fi
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: standards-drift check
+        env:
+          LOCK_PATH: ${{ inputs.lock-path }}
+        run: |
+          python -m pip install --disable-pip-version-check --no-cache-dir "pyyaml==6.0.3"
+          python .standards/tools/standards_drift.py check --repo . --standards .standards --lock "$LOCK_PATH"
