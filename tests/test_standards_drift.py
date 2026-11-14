@@ -174,7 +174,7 @@ class InitUpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo, std = pathlib.Path(tmp, "repo"), pathlib.Path(tmp, "std")
             repo.mkdir()
-            for part in ("templates", "standard"):  # a plain (non-git) copy of the release
+            for part in ("templates", "standard", "harness"):  # a plain (non-git) copy of the release
                 shutil.copytree(ROOT / part, std / part)
             with contextlib.redirect_stdout(io.StringIO()):
                 code = D.main(["init", "--repo", str(repo), "--standards", str(std), "--tag", "v1.0.0",

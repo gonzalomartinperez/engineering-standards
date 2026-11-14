@@ -39,6 +39,14 @@
     {
       "template": "standard/rubrics.md",
       "path": "docs/master-plan/rubrics.md"
+    },
+    {
+      "template": "harness/hooks/guard-bash.py",
+      "path": ".claude/hooks/guard-bash.py"
+    },
+    {
+      "template": "harness/hooks/guard-files.py",
+      "path": ".claude/hooks/guard-files.py"
     }
   ]
 }
