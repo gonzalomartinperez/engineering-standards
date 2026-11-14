@@ -58,7 +58,8 @@ def private_pem(path: str) -> bool:
 def reason_for(tool: str, path: str) -> str | None:
     posix = pathlib.PurePath(path).as_posix()
     name = posix.rsplit("/", 1)[-1]
-    env_glob = re.search(r"(^|/)\.e[^/]*[*?\[]", posix) or re.search(r"(^|/)[*?]+env", posix)
+    env_glob = (re.search(r"(^|/)\.e[^/]*[*?\[]", posix) or re.search(r"(^|/)[*?]+env", posix)
+                or re.search(r"(^|/)\.[*?\[]", posix) or re.search(r"[*?]\.env($|[.*])", posix))
     if (ENV.search(posix) and not SAFE_ENV_SUFFIX.search(name)) or env_glob or PRIVATE_KEY.search(posix) or private_pem(path):
         return f"{posix} may hold secrets; it never enters the context (use .env.example)"
     if tool in WRITE_TOOLS and name in LOCKFILES:

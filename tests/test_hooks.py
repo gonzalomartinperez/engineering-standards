@@ -48,6 +48,14 @@ BLOCKED = [
     "python3 -c \"print(open('.env').read())\"", "node -e \"require('fs').readFileSync('.env')\"",
     "tail -F .env", "cat -b .env", "find / -exec rm -rf {} +", "git push --mirror origin",
     f"psql -c '{DROP_TABLE} users'", f"psql -c '{TRUNC} users'", "dropdb app", "setsid pkill -f x",
+    # third review: heredocs, stdin shells, wrappers, history reads, find -delete
+    "cat <<EOF && pkill -f x\nhello\nEOF", "cat <<'EOF' ; git reset --hard\nx\nEOF",
+    "cat <<EOF > f.txt; rm -rf /etc\nx\nEOF", "bash <<'EOF'\npkill -f x\nEOF", "sh <<EOF\ngit push -f origin main\nEOF",
+    "bash -s <<'EOF'\nrm -rf /\nEOF", "cat <<EOF | bash\nls\nEOF", "echo 'pkill -f x' | bash",
+    "bash <<< 'pkill -f x'", "python3 - <<'EOF'\nprint(open('.env').read())\nEOF",
+    "node <<EOF\nrequire('fs').readFileSync('.env')\nEOF", "cat <<EOF >x\n$(pkill -f y)\nEOF",
+    f"psql <<'EOF'\n{DROP_TABLE} users;\nEOF", "nice -n10 pkill -f x", "flock /tmp/l pkill -f x",
+    "flock -c 'pkill -f x' /tmp/l", "git show HEAD:.env", "git cat-file -p HEAD:.env", "find . -delete",
 ]
 
 ALLOWED = [
@@ -59,6 +67,9 @@ ALLOWED = [
     "node --env-file=.env server.js", "echo \"a; b\"", "git -C some/dir status", "git clean -n -d",
     "git commit -m \"$(cat <<'EOF'\nfix .env handling\nEOF\n)\"", f"gh issue create --body 'about {DROP_DB}'",
     "rm -rf dist/*", "rm -rf build/*.js", "echo '# not a comment' && npm test", "python3 -c 'print(1)'",
+    "python3 -c \"print('.env files are ignored')\"", "bash scripts/check.sh", "bash <<'EOF'\nnpm test\nEOF",
+    "python3 - <<'EOF'\nprint('hi')\nEOF", "cat <<'EOF' > notes.md\nkeep $(this) literal\nEOF",
+    "find . -name '*.pyc' -delete", "gh pr create --body \"$(cat <<'EOF'\nfixes .env docs\nEOF\n)\"",
 ]
 
 
@@ -125,6 +136,9 @@ class GuardFilesTests(unittest.TestCase):
     def test_search_tools_and_private_pem(self):
         self.assertEqual(run(FILES, {"tool_name": "Grep", "tool_input": {"pattern": "KEY", "glob": ".env*"}})[0], 2)
         self.assertEqual(run(FILES, {"tool_name": "Glob", "tool_input": {"pattern": "**/.env"}})[0], 2)
+        self.assertEqual(run(FILES, {"tool_name": "Glob", "tool_input": {"pattern": ".*"}})[0], 2)
+        self.assertEqual(run(FILES, {"tool_name": "Grep", "tool_input": {"pattern": "x", "glob": "*.env"}})[0], 2)
+        self.assertEqual(run(FILES, {"tool_name": "Glob", "tool_input": {"pattern": "src/**/*.ts"}})[0], 0)
         self.assertEqual(run(FILES, {"tool_name": "Grep", "tool_input": {"pattern": "process.env.API", "path": "src"}})[0], 0)
         with tempfile.TemporaryDirectory() as tmp:
             key = f"{tmp}/server.pem"

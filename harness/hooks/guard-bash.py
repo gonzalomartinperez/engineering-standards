@@ -17,7 +17,9 @@ xargs, eval, `bash|sh|zsh -c`) and recurses into `$(...)` and backticks. Blocks:
     outside a temp directory or the working tree (globs that can reach dotfiles included),
     `find -exec` of any blocked command, docker prune / `volume rm` / `compose down -v`,
     destructive SQL (DROP DATABASE/SCHEMA/TABLE, TRUNCATE, dropdb)
-Heredoc bodies are treated as data and not analysed (commit and PR messages use them).
+Heredoc bodies are analysed by consumer: shells as scripts, interpreters for .env reads, database
+clients for destructive SQL; other bodies (commit and PR messages) are data. A shell reading
+commands from stdin (`| bash`, `bash -s`) is blocked unless its script is a visible heredoc.
 Fails closed: an internal error blocks the command. Hard rules live here, not in prose (15.1).
 """
 from __future__ import annotations
@@ -35,11 +37,15 @@ SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 OPERATORS = {";", "&&", "||", "|", "&", "|&", "(", ")", "{", "}", "!", ";;", "\n"}
 KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "case", "esac", "in"}
 SAFE_ENV_SUFFIX = re.compile(r"\.(example|sample|template|dist)(\.|$)")
-ENV_TOKEN = re.compile(r"(^|[/=<>])\.env([.*?][^/]*)?$")
+ENV_TOKEN = re.compile(r"(^|[/=<>:])\.env([.*?][^/]*)?$")
 SQL = re.compile(r"\b(DROP\s+(DATABASE|SCHEMA|TABLE)|TRUNCATE)\b", re.I)
 INTERPRETERS = {"python", "python3", "node", "ruby", "perl", "php", "deno", "bun"}
-ENV_SUBSTRING = re.compile(r"""(^|[\s'"(,=/])\.env(?!\.(example|sample|template|dist)\b)(\.[\w-]+)?(['")\s,]|$)""")
-HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2\s*(?=\n|$)", re.S)
+QUOTED_ENV = re.compile(r"""(['"]|/)\.env(?!\.(example|sample|template|dist)\b)(\.[\w-]+)?['"]""")
+HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)(\w+)\1([^\n]*)\n(.*?)\n[ \t]*\2[ \t]*(?=\n|$)", re.S)
+HEREDOC_MARK = "__heredoc_body__"
+DB_CLIENTS = {"psql", "mysql", "mariadb", "sqlite3", "mongosh", "clickhouse-client"}
+FIND_PREDICATES = {"-name", "-iname", "-path", "-ipath", "-regex", "-iregex", "-type", "-newer", "-mtime", "-mmin",
+                   "-size", "-empty", "-user", "-perm"}
 GLOB_CHARS = set("*?[")
 MESSAGE_FLAGS = {"-m", "--message", "--grep", "-F", "--file", "--title", "--body", "-t", "-b"}
 TEMP_PREFIXES = ("/tmp/", "/var/tmp/", "$TMPDIR/", "${TMPDIR}/", "$RUNNER_TEMP/", "${RUNNER_TEMP}/")
@@ -107,13 +113,20 @@ def unwrap(words: list[str]) -> list[str]:
             words = words[1:]
             if words and words[0] in ("-n", "--adjustment"):
                 words = words[2:]
-            elif words and re.fullmatch(r"-\d+|--adjustment=.*", words[0]):
+            elif words and re.fullmatch(r"-n?-?\d+|--adjustment=.*", words[0]):
                 words = words[1:]
+        elif head == "flock":
+            words = words[1:]
+            while words and words[0].startswith("-"):
+                if words[0] in ("-c", "--command") and len(words) > 1:
+                    return ["sh", "-c", words[1]]
+                words = words[2:] if words[0] in ("-w", "--timeout", "-E", "--conflict-exit-code") else words[1:]
+            words = words[1:]  # lock file or descriptor
         elif head == "xargs":
             words = words[1:]
             while words and words[0].startswith("-"):
                 words = words[2:] if words[0] in ("-I", "-n", "-P", "-L", "-d", "-E", "-s") else words[1:]
-        elif head in ("nohup", "command", "exec", "time", "builtin", "stdbuf", "chrt", "ionice", "setsid", "flock"):
+        elif head in ("nohup", "command", "exec", "time", "builtin", "stdbuf", "chrt", "ionice", "setsid"):
             words = words[1:]
             while words and words[0].startswith("-"):
                 words = words[1:]
@@ -207,8 +220,15 @@ def reason_for_words(words: list[str], depth: int) -> str | None:
     name, args = words[0].rsplit("/", 1)[-1], words[1:]
     if name in SHELLS:
         for j, a in enumerate(args):
+            if a == "<<<" and j + 1 < len(args):
+                return reason_for(args[j + 1], depth + 1)
             if a.startswith("-") and not a.startswith("--") and "c" in a and j + 1 < len(args):
                 return reason_for(args[j + 1], depth + 1)
+        if HEREDOC_MARK in args:
+            return None  # the heredoc body was analysed as a script
+        script = next((a for a in args if not a.startswith("-") and not set(a) <= set("<>")), None)
+        if script is None or "-s" in short_flags(args):
+            return "a shell reading commands from stdin is blocked (pass a script file or -c)"
         return None
     if name == "eval":
         return reason_for(" ".join(args), depth + 1)
@@ -219,11 +239,12 @@ def reason_for_words(words: list[str], depth: int) -> str | None:
                 why = reason_for_words(inner, depth + 1)
                 if why:
                     return why
-        if "-delete" in args and any(p in ("/", "~", "..", ".git") for p in args):
-            return "find -delete on a protected path is blocked"
+        if "-delete" in args and (any(p in ("/", "~", "..", ".git") for p in args)
+                                  or not set(args) & FIND_PREDICATES):
+            return "find -delete without a narrowing predicate (or on a protected path) is blocked"
     if name == "dropdb":
         return "dropdb is blocked"
-    if name in INTERPRETERS and any(ENV_SUBSTRING.search(a) for a in args if not a.startswith("--env-file")):
+    if name in INTERPRETERS and any(QUOTED_ENV.search(a) for a in args if not a.startswith("--env-file")):
         return "reading .env files is blocked (use .env.example; secrets never enter the context)"
     if name == "pkill" and short_flags(args) & {"-f", "--full"}:
         return "pkill -f is blocked: kill only by verified PID (OD-74)"
@@ -267,10 +288,44 @@ def env_reference(words: list[str]) -> bool:
     return False
 
 
+def split_heredocs(cmd: str) -> tuple[str, list[tuple[str, bool, str]]]:
+    """Replace heredoc bodies with a marker; return them with their consumer command and quoting."""
+    bodies: list[tuple[str, bool, str]] = []
+
+    def repl(m: re.Match) -> str:
+        line_start = cmd.rfind("\n", 0, m.start()) + 1
+        segs = segments(tokenize(cmd[line_start:m.start()]))
+        words = unwrap(segs[-1]) if segs else []
+        consumer = words[0].rsplit("/", 1)[-1] if words else ""
+        bodies.append((consumer, bool(m.group(1)), m.group(4)))
+        return f"<< {HEREDOC_MARK}{m.group(3)}"
+
+    return HEREDOC.sub(repl, cmd), bodies
+
+
+def reason_for_heredoc(consumer: str, quoted: bool, body: str, depth: int) -> str | None:
+    if consumer in SHELLS:
+        return reason_for(body, depth + 1)
+    if consumer in INTERPRETERS and QUOTED_ENV.search(body):
+        return "reading .env files is blocked (use .env.example; secrets never enter the context)"
+    if consumer in DB_CLIENTS and SQL.search(body):
+        return "destructive SQL (DROP DATABASE/SCHEMA/TABLE, TRUNCATE) is blocked"
+    if not quoted:  # unquoted delimiters expand $(...) and backticks inside the body
+        for inner in substitutions(body):
+            why = reason_for(inner, depth + 1)
+            if why:
+                return why
+    return None  # other bodies are data (commit messages, PR bodies, files)
+
+
 def reason_for(cmd: str, depth: int = 0) -> str | None:
     if depth > 4:
         return None
-    cmd = HEREDOC.sub("<<HEREDOC", cmd)  # heredoc bodies are data (commit messages, PR bodies)
+    cmd, bodies = split_heredocs(cmd)
+    for consumer, quoted, body in bodies:
+        why = reason_for_heredoc(consumer, quoted, body, depth)
+        if why:
+            return why
     tokens = tokenize(cmd)
     for words in segments(tokens):
         if env_reference(unwrap(words)):
