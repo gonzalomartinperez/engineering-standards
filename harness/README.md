@@ -20,3 +20,7 @@ Guard policy notes: `rm -rf` is allowed on relative paths inside the working tre
 unwrap common wrappers, not a sandbox; the sandbox and approval policy remain the outer layer.
 Skill staleness: `check_skills.py` warns on PRs; a scheduled `--strict-staleness` run belongs to the
 M2 eval tooling and is not shipped in v1.0.0.
+Known conservative blocks (by design in v1.0.0): monorepo globs such as `rm -rf packages/*/dist`,
+`rm -rf "$d"` with a variable path, and any command naming `.env` (`touch .env`, `rm .env`) except
+`git check-ignore`, `git ls-files`, `git rm --cached` and `--env-file` loading. Ask the owner or use an
+explicit relative path.

@@ -37,10 +37,10 @@ SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
 OPERATORS = {";", "&&", "||", "|", "&", "|&", "(", ")", "{", "}", "!", ";;", "\n"}
 KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "case", "esac", "in"}
 SAFE_ENV_SUFFIX = re.compile(r"\.(example|sample|template|dist)(\.|$)")
-ENV_TOKEN = re.compile(r"(^|[/=<>:])\.env([.*?][^/]*)?$")
+ENV_TOKEN = re.compile(r"(^|[/=<>:@])\.env([.*?][^/]*)?$")
 SQL = re.compile(r"\b(DROP\s+(DATABASE|SCHEMA|TABLE)|TRUNCATE)\b", re.I)
 INTERPRETERS = {"python", "python3", "node", "ruby", "perl", "php", "deno", "bun"}
-QUOTED_ENV = re.compile(r"""(['"]|/)\.env(?!\.(example|sample|template|dist)\b)(\.[\w-]+)?['"]""")
+QUOTED_ENV = re.compile(r"""(['"`]|/)\.env(?!\.(example|sample|template|dist)\b)(\.[\w-]+)?['"`]""")
 HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)(\w+)\1([^\n]*)\n(.*?)\n[ \t]*\2[ \t]*(?=\n|$)", re.S)
 HEREDOC_MARK = "__heredoc_body__"
 DB_CLIENTS = {"psql", "mysql", "mariadb", "sqlite3", "mongosh", "clickhouse-client"}
@@ -55,7 +55,11 @@ def strip_prefix(text: str, prefix: str) -> str:
     return text[len(prefix):] if text.startswith(prefix) else text
 
 
+FIND_ARG = "__find_arg__"
+
+
 def tokenize(cmd: str) -> list[str]:
+    cmd = re.sub(r"(?<=\s)\{\}(?=\s|$)", FIND_ARG, cmd)  # find -exec placeholder, not a brace group
     lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|(){}<>!\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
@@ -122,6 +126,8 @@ def unwrap(words: list[str]) -> list[str]:
                     return ["sh", "-c", words[1]]
                 words = words[2:] if words[0] in ("-w", "--timeout", "-E", "--conflict-exit-code") else words[1:]
             words = words[1:]  # lock file or descriptor
+            if words and words[0] in ("-c", "--command") and len(words) > 1:
+                return ["sh", "-c", words[1]]
         elif head == "xargs":
             words = words[1:]
             while words and words[0].startswith("-"):
@@ -235,7 +241,10 @@ def reason_for_words(words: list[str], depth: int) -> str | None:
     if name == "find":
         for j, a in enumerate(args):
             if a in ("-exec", "-execdir", "-ok", "-okdir"):
-                inner = [w for w in args[j + 1:] if w not in ("{}", "+")]
+                roots = [r for r in args[:j] if not r.startswith("-")][:1] or ["."]
+                safe_roots = all(not risky_rm_path(r) or r == "." for r in roots)
+                inner = [w for w in args[j + 1:] if w not in ("+", ";")]
+                inner = [("found-path" if w == FIND_ARG else w) for w in inner if w != FIND_ARG or safe_roots]
                 why = reason_for_words(inner, depth + 1)
                 if why:
                     return why
@@ -273,11 +282,14 @@ def env_reference(words: list[str]) -> bool:
     """True when a word of one command segment names a .env file (message values of git/gh skipped)."""
     skip = False
     message_cmd = bool(words) and words[0].rsplit("/", 1)[-1] in ("git", "gh")
+    if message_cmd and len(words) > 1 and (words[1] in ("check-ignore", "ls-files")
+                                           or (words[1] == "rm" and "--cached" in words)):
+        return False  # these do not read the file content
     for tok in words:
         if skip:
             skip = False
             continue
-        if message_cmd and tok in MESSAGE_FLAGS:
+        if (message_cmd and tok in MESSAGE_FLAGS) or tok in ("--env-file", "--env-file-if-exists"):
             skip = True
             continue
         if tok.startswith("--env-file") or tok.startswith(("--message=", "--grep=", "--title=", "--body=")):
@@ -296,7 +308,8 @@ def split_heredocs(cmd: str) -> tuple[str, list[tuple[str, bool, str]]]:
         line_start = cmd.rfind("\n", 0, m.start()) + 1
         segs = segments(tokenize(cmd[line_start:m.start()]))
         words = unwrap(segs[-1]) if segs else []
-        consumer = words[0].rsplit("/", 1)[-1] if words else ""
+        names = [w.split()[0].rsplit("/", 1)[-1] for w in words if w.split()]
+        consumer = next((n for n in names if n in SHELLS | INTERPRETERS | DB_CLIENTS), names[0] if names else "")
         bodies.append((consumer, bool(m.group(1)), m.group(4)))
         return f"<< {HEREDOC_MARK}{m.group(3)}"
 
