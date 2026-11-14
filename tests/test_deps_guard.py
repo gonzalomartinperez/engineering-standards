@@ -7,9 +7,11 @@ M = load_module(".github/workflows/deps-weekly-guard.yml", step_id="guard")
 NOW = datetime.datetime(2026, 11, 16, 13, 30, tzinfo=datetime.timezone.utc)
 
 
-def pr(number, created, login="dependabot[bot]", labels=()):
-    return {"number": number, "created_at": created, "title": f"deps {number}", "user": {"login": login},
-            "head": {"sha": f"sha{number}"}, "base": {"ref": "develop"}, "labels": [{"name": n} for n in labels]}
+def pr(number, created, login="dependabot[bot]", labels=(), ref=None, title=None):
+    ref = ref if ref is not None else f"dependabot/develop/weekly-{number:04x}abc"
+    return {"number": number, "created_at": created, "title": title or f"deps {number}", "user": {"login": login},
+            "head": {"sha": f"sha{number}", "ref": ref}, "base": {"ref": "develop"},
+            "labels": [{"name": n} for n in labels]}
 
 
 class FakeApi:
@@ -43,6 +45,35 @@ class GuardTests(unittest.TestCase):
         self.assertEqual(api.writes(), [("POST", "/issues/3/comments"), ("PATCH", "/pulls/3")])
         self.assertIn("superseded by #8", actions[0])
 
+    def test_security_or_other_dependabot_prs_are_never_closed(self):
+        api = FakeApi([pr(3, "2026-11-09T12:00:00Z", ref="dependabot/npm_and_yarn/lodash-4.17.21"),
+                       pr(8, "2026-11-16T12:00:00Z")])
+        _, notes, survivor = M.guard(api, "pull_request", "ci-gate", False, NOW)
+        self.assertEqual(survivor["number"], 8)
+        self.assertEqual(api.writes(), [])
+        self.assertTrue(any("#3" in n for n in notes))
+
+    def test_check_name_with_spaces_is_encoded(self):
+        api = FakeApi([pr(8, "2026-11-16T12:00:00Z")], runs=[{"status": "completed", "conclusion": "success"}])
+        M.guard(api, "schedule", "ci / ci-gate", False, NOW)
+        path = [p for _, p, _ in api.calls if "/check-runs" in p][0]
+        self.assertNotIn(" ", path)
+        self.assertIn("check_name=ci+%2F+ci-gate", path)
+
+    def test_cancelled_or_skipped_gate_is_neither_red_nor_green(self):
+        for conclusion in ("cancelled", "skipped", "neutral", "stale"):
+            api = FakeApi([pr(8, "2026-11-16T12:00:00Z", labels=["needs-fix"])],
+                          runs=[{"status": "completed", "conclusion": conclusion}])
+            _, notes, _ = M.guard(api, "schedule", "ci-gate", False, NOW)
+            with self.subTest(conclusion=conclusion):
+                self.assertEqual(api.writes(), [])
+                self.assertTrue(any("no green result" in n for n in notes))
+
+    def test_titles_cannot_mention(self):
+        api = FakeApi([pr(8, "2026-11-16T12:00:00Z", title="bump @babel/core | x")])
+        _, notes, _ = M.guard(api, "pull_request", "ci-gate", False, NOW)
+        self.assertIn("`bump @babel/core x`", notes[0])
+
     def test_single_pr_on_pull_request_event_only_dedupes(self):
         api = FakeApi([pr(8, "2026-11-16T12:00:00Z")])
         M.guard(api, "pull_request", "ci-gate", False, NOW)
@@ -65,7 +96,7 @@ class GuardTests(unittest.TestCase):
         api = FakeApi([pr(8, "2026-11-16T12:00:00Z")], runs=[{"status": "in_progress", "conclusion": None}])
         _, notes, _ = M.guard(api, "schedule", "ci-gate", False, NOW)
         self.assertEqual(api.writes(), [])
-        self.assertTrue(any("not completed" in n for n in notes))
+        self.assertTrue(any("no green result" in n for n in notes))
 
     def test_behind_never_comments_unless_opted_in(self):
         api = FakeApi([pr(8, "2026-11-16T12:00:00Z")], behind=2, runs=[{"status": "completed", "conclusion": "success"}])
@@ -83,6 +114,15 @@ class GuardTests(unittest.TestCase):
 
 
 class TrackerTests(unittest.TestCase):
+    def test_replace_section_with_end_before_start_appends(self):
+        body = M.replace_section("<!-- s:end --> text <!-- s:start -->", "s", "new")
+        self.assertTrue(body.endswith("<!-- s:end -->\n"))
+        self.assertIn("text", body)
+
+    def test_ensure_tracker_reuses_renamed_issue(self):
+        api = FakeApi([], issues=[{"number": 6, "title": "renamed by owner", "body": ""}])
+        self.assertEqual(M.ensure_tracker(api, "Dependency and vulnerability tracker", "vuln")["number"], 6)
+
     def test_replace_section_appends_then_replaces(self):
         body = M.replace_section("intro", "deps-weekly-guard", "one")
         self.assertIn("intro", body)

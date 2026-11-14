@@ -18,7 +18,7 @@ import standards_drift as D  # noqa: E402
 COMMIT = "a" * 40
 
 
-def lock(files=(), checks=(), flow="release", commit=COMMIT):
+def lock(files=(), checks=("workflow-pins",), flow="release", commit=COMMIT):
     return {"standards": {"repository": D.REPOSITORY, "tag": "v1.0.0", "commit": commit}, "flow": flow,
             "files": list(files), "checks": list(checks)}
 
@@ -78,6 +78,20 @@ class CheckTests(unittest.TestCase):
             self.assertEqual(s.check()[0], 2)
             s.write_lock(lock([{"path": "../x", "template": "templates/community/SECURITY.md"}]))
             self.assertEqual(s.check()[0], 2)
+
+    def test_lock_without_checks_is_input_error(self):
+        with Sandbox() as s:
+            (s.repo / "SECURITY.md").write_text("# Security\n")
+            s.write_lock(lock(FILES, checks=()))
+            self.assertEqual(s.check()[0], 2)
+
+    def test_malformed_dependabot_is_reported(self):
+        with Sandbox() as s:
+            (s.repo / ".github/dependabot.yml").write_text("version: 2\nupdates: [1, 2]\nmulti-ecosystem-groups: []\n")
+            s.write_lock(lock(checks=["dependabot-policy"]))
+            code, out = s.check()
+            self.assertEqual(code, 1)
+            self.assertIn("::error", out)
 
     def test_workflow_pins(self):
         with Sandbox() as s:
@@ -158,15 +172,29 @@ class DependabotPolicyTests(unittest.TestCase):
 class InitUpdateTests(unittest.TestCase):
     def test_init_then_check_clean(self):
         with tempfile.TemporaryDirectory() as tmp:
-            repo = pathlib.Path(tmp)
+            repo, std = pathlib.Path(tmp, "repo"), pathlib.Path(tmp, "std")
+            repo.mkdir()
+            for part in ("templates", "standard"):  # a plain (non-git) copy of the release
+                shutil.copytree(ROOT / part, std / part)
             with contextlib.redirect_stdout(io.StringIO()):
-                code = D.main(["init", "--repo", str(repo), "--standards", str(ROOT), "--tag", "v1.0.0",
+                code = D.main(["init", "--repo", str(repo), "--standards", str(std), "--tag", "v1.0.0",
                                "--commit", COMMIT, "--flow", "release", "--visibility", "private"])
-            self.assertIn(code, (0, 2))  # 2 when ROOT is a git checkout whose HEAD differs from COMMIT
-            if code == 0:
-                data = json.loads((repo / "standards.lock").read_text())
-                self.assertNotIn("CODE_OF_CONDUCT.md", [f["path"] for f in data["files"]])
-                self.assertTrue((repo / "SECURITY.md").exists())
+            self.assertEqual(code, 0)
+            data = json.loads((repo / "standards.lock").read_text())
+            paths = [f["path"] for f in data["files"]]
+            self.assertNotIn("CODE_OF_CONDUCT.md", paths)
+            self.assertIn("docs/master-plan/ecosystem.md", paths)
+            (repo / ".github").mkdir(exist_ok=True)
+            shutil.copyfile(std / "templates/dependabot/release.yml", repo / ".github/dependabot.yml")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(D.main(["check", "--repo", str(repo), "--standards", str(std)]), 0)
+
+    def test_git_checkout_at_other_commit_refuses_init(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = D.main(["init", "--repo", tmp, "--standards", str(ROOT), "--tag", "v1.0.0",
+                               "--commit", COMMIT, "--flow", "release", "--visibility", "public"])
+            self.assertEqual(code, 2)
 
     def test_manifest_templates_exist(self):
         manifest = json.loads((ROOT / "templates/MANIFEST.json").read_text())
@@ -185,7 +213,7 @@ class InitUpdateTests(unittest.TestCase):
             data = json.loads((s.repo / "standards.lock").read_text())
             self.assertEqual(data["standards"]["tag"], "v1.1.0")
             self.assertEqual((s.repo / "SECURITY.md").read_text(), "# Security\n")
-            self.assertEqual(s.check()[0], 2 if shutil.which("git") and False else 0)
+            self.assertEqual(s.check()[0], 0)
 
 
 if __name__ == "__main__":

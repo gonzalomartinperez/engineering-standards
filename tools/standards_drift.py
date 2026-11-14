@@ -66,7 +66,10 @@ def load_lock(path: pathlib.Path) -> dict:
             p = pathlib.PurePosixPath(f[key])
             if p.is_absolute() or ".." in p.parts:
                 raise InputError(f"{key} {f[key]!r} must be a relative path inside the repository")
-    unknown = set(lock.get("checks", [])) - KNOWN_CHECKS
+    checks = lock.get("checks")
+    if not isinstance(checks, list) or not checks:
+        raise InputError("checks must list the policy checks (dependabot-policy, workflow-pins)")
+    unknown = set(checks) - KNOWN_CHECKS
     if unknown:
         raise InputError(f"unknown checks: {', '.join(sorted(unknown))}")
     return lock
@@ -95,10 +98,12 @@ def check_files(repo: pathlib.Path, standards: pathlib.Path, files: list[dict]) 
 def check_dependabot(doc: dict, flow: str) -> tuple[list[str], list[str]]:
     """Validate the verified weekly single-PR shape (ecosystem 5.2, shared/dependabot-rule.md)."""
     errors, warnings = [], []
+    if not isinstance(doc, dict):
+        return ["the file is not a YAML mapping"], warnings
     if doc.get("version") != 2:
         errors.append("version must be 2")
     groups = doc.get("multi-ecosystem-groups") or {}
-    if len(groups) != 1:
+    if not isinstance(groups, dict) or len(groups) != 1 or not isinstance(next(iter(groups.values())), dict):
         errors.append(f"exactly one multi-ecosystem group required (found {len(groups)})")
         return errors, warnings
     (name, group), = groups.items()
@@ -117,8 +122,13 @@ def check_dependabot(doc: dict, flow: str) -> tuple[list[str], list[str]]:
     if not (group.get("commit-message") or {}).get("prefix"):
         errors.append("group commit-message.prefix is required (set once on the group)")
     updates = doc.get("updates") or []
+    if not isinstance(updates, list):
+        return errors + ["updates must be a list"], warnings
     ecosystems = set()
     for i, entry in enumerate(updates):
+        if not isinstance(entry, dict):
+            errors.append(f"updates[{i}] must be a mapping")
+            continue
         eco = entry.get("package-ecosystem", f"#{i}")
         ecosystems.add(eco)
         where = f"updates[{i}] ({eco} {entry.get('directory') or entry.get('directories')})"
@@ -129,7 +139,7 @@ def check_dependabot(doc: dict, flow: str) -> tuple[list[str], list[str]]:
         for key in ("open-pull-requests-limit", "commit-message", "schedule", "target-branch", "groups"):
             if key in entry:
                 errors.append(f"{where}: {key} is not allowed on entries that join the group")
-        cooldown = entry.get("cooldown") or {}
+        cooldown = entry.get("cooldown") if isinstance(entry.get("cooldown"), dict) else {}
         if cooldown.get("default-days") != 7:
             errors.append(f"{where}: cooldown.default-days must be 7")
         semver_keys = {k for k in cooldown if k.startswith("semver-")}
@@ -177,7 +187,11 @@ def run_check(repo: pathlib.Path, standards: pathlib.Path, lock_path: pathlib.Pa
                 import yaml  # noqa: PLC0415 - optional dependency, only for this check
             except ImportError as exc:
                 raise InputError("dependabot-policy needs PyYAML: uv run --with pyyaml==6.0.3 ...") from exc
-            e, w = check_dependabot(yaml.safe_load(dep.read_text(encoding="utf-8")) or {}, lock["flow"])
+            try:
+                doc = yaml.safe_load(dep.read_text(encoding="utf-8"))
+            except yaml.YAMLError as exc:
+                raise InputError(f".github/dependabot.yml is not valid YAML: {exc}") from exc
+            e, w = check_dependabot(doc, lock["flow"])
             errors += [f".github/dependabot.yml: {x}" for x in e]
             warnings += [f".github/dependabot.yml: {x}" for x in w]
     if "workflow-pins" in lock.get("checks", []):
@@ -198,10 +212,13 @@ def run_check(repo: pathlib.Path, standards: pathlib.Path, lock_path: pathlib.Pa
 
 
 def git_head(path: pathlib.Path) -> str | None:
+    """HEAD of a git checkout; None for a plain directory; InputError when git fails on a checkout."""
+    if not (path / ".git").exists():
+        return None
     try:
         out = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True, check=True)
-    except (OSError, subprocess.CalledProcessError):
-        return None
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise InputError(f"cannot read HEAD of {path}: {exc}") from exc
     return out.stdout.strip()
 
 
@@ -261,7 +278,7 @@ def run_update(args) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="standards-drift", description=__doc__.split("\n")[0])
+    parser = argparse.ArgumentParser(prog="standards-drift", description=(__doc__ or "").split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("check", "init", "update"):
         p = sub.add_parser(name)

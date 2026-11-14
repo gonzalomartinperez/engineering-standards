@@ -18,14 +18,17 @@
 #         checks: read
 #
 # Behaviour (API only; no PR code is checked out or executed):
-# 1. At most one open Dependabot PR: when two or more are open, every older one is closed with a
-#    comment pointing to the newest (the only comment the guard ever writes by default).
+# 1. At most one open weekly group PR (head branch `dependabot/<target>/<group>-<hash>`): when two or
+#    more are open, every older one is closed with a comment pointing to the newest (the only comment
+#    the guard writes by default; a rare correctness event). Other Dependabot PRs (for example a
+#    security update if someone re-enables them) are reported in the tracker, never closed.
 # 2. On schedule/dispatch: the survivor's `ci-gate` result is read; red adds the `needs-fix` label so
 #    the harness repairs it on the same branch; green removes it. Staleness against the base branch
 #    is recorded. A `@dependabot rebase` comment is opt-in (`request-rebase`) because every comment
 #    notifies the owner (OD-75 email budget).
 # 3. The state is written silently into the guard section of the single pinned tracking issue
-#    (label `vuln`, shared with vuln-daily.yml): body edits notify nobody, no mentions, no new issues.
+#    (label `vuln`, shared with vuln-daily.yml) on schedule/dispatch runs: body edits notify nobody,
+#    every interpolated value is wrapped in code spans so nothing can @-mention, no new issues.
 name: deps-weekly-guard
 
 on:
@@ -35,6 +38,10 @@ on:
         description: Name of the required check on the dependency PR.
         type: string
         default: ci-gate
+      group-name:
+        description: Name of the Dependabot multi-ecosystem group.
+        type: string
+        default: weekly
       request-rebase:
         description: Comment `@dependabot rebase` when the survivor is behind its base (notifies the owner).
         type: boolean
@@ -55,6 +62,9 @@ jobs:
     name: deps-weekly-guard
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: tracking-issue-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       contents: read
       pull-requests: write
@@ -72,12 +82,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GATE_CHECK: ${{ inputs.gate-check-name }}
+          GROUP_NAME: ${{ inputs.group-name }}
           REQUEST_REBASE: ${{ inputs.request-rebase }}
           TRACKER_TITLE: ${{ inputs.tracker-title }}
           TRACKER_LABEL: ${{ inputs.tracker-label }}
         run: |
           # deps-weekly-guard v1 — tests extract this block and run it against a fake API.
-          import datetime, json, os, sys, urllib.error, urllib.request
+          import datetime, json, os, re, sys, urllib.error, urllib.parse, urllib.request
 
           DEPENDABOT = "dependabot[bot]"
           SECTION = "deps-weekly-guard"
@@ -98,20 +109,30 @@ jobs:
                       return json.loads(raw) if raw else None
 
 
+          def code(value):
+              """Inline code span: neutralises @-mentions, #-references, pipes and newlines."""
+              text = " ".join(re.sub(r"[`|]+", " ", str(value)).split())
+              return f"`{text}`"
+
+
           def replace_section(body, name, content):
               start, end = f"<!-- {name}:start -->", f"<!-- {name}:end -->"
               block = f"{start}\n{content.strip()}\n{end}"
               body = body or ""
-              if start in body and end in body:
-                  return body[: body.index(start)] + block + body[body.index(end) + len(end):]
+              i, j = body.find(start), body.find(end)
+              if i != -1 and j > i:
+                  return body[:i] + block + body[j + len(end):]
               return (body.rstrip() + "\n\n" + block + "\n").lstrip()
 
 
           def ensure_tracker(api, title, label):
-              issues = api.call("GET", f"/issues?state=open&labels={label}&per_page=100") or []
+              issues = [i for i in api.call("GET", f"/issues?state=open&labels={urllib.parse.quote(label)}&per_page=100") or []
+                        if "pull_request" not in i]
               for issue in issues:
-                  if issue.get("title") == title and "pull_request" not in issue:
+                  if issue.get("title") == title:
                       return issue
+              if issues:  # renamed by the owner: keep using it rather than opening a second issue
+                  return issues[0]
               intro = ("Single tracking issue updated silently by the scheduled dependency and vulnerability jobs "
                        "(ecosystem 5.5, OD-75). Edits notify nobody; only the Monday summary comment notifies.")
               try:
@@ -125,11 +146,16 @@ jobs:
               return issue
 
 
-          def guard(api, event_name, gate_check, request_rebase, now):
+          def guard(api, event_name, gate_check, request_rebase, now, group="weekly"):
               actions, notes = [], []
               pulls = api.call("GET", "/pulls?state=open&per_page=100") or []
-              deps = sorted((p for p in pulls if p["user"]["login"] == DEPENDABOT),
+              group_ref = re.compile(r"^dependabot/.+/" + re.escape(group) + r"-[0-9a-f]+$")
+              bot = [p for p in pulls if p["user"]["login"] == DEPENDABOT]
+              deps = sorted((p for p in bot if group_ref.match(p["head"].get("ref", ""))),
                             key=lambda p: (p["created_at"], p["number"]))
+              for other in bot:
+                  if other not in deps:
+                      notes.append(f"Other Dependabot PR #{other['number']} {code(other['title'])} is open (not closed by the guard).")
               survivor = deps[-1] if deps else None
               for old in deps[:-1]:
                   api.call("POST", f"/issues/{old['number']}/comments", {"body": (
@@ -141,30 +167,32 @@ jobs:
                   notes.append("No open Dependabot PR.")
                   return actions, notes, None
               number, head_sha = survivor["number"], survivor["head"]["sha"]
-              notes.append(f"Open dependency PR: #{number} `{survivor['title']}` (opened {survivor['created_at']}).")
+              notes.append(f"Open dependency PR: #{number} {code(survivor['title'])} (opened {survivor['created_at']}).")
               if event_name not in ("schedule", "workflow_dispatch"):
                   return actions, notes, survivor
 
               compare = api.call("GET", f"/compare/{survivor['base']['ref']}...{head_sha}") or {}
               behind = compare.get("behind_by", 0)
               if behind:
-                  notes.append(f"#{number} is {behind} commit(s) behind `{survivor['base']['ref']}`.")
+                  notes.append(f"#{number} is {behind} commit(s) behind {code(survivor['base']['ref'])}.")
                   if request_rebase:
                       api.call("POST", f"/issues/{number}/comments", {"body": "@dependabot rebase"})
                       actions.append(f"requested a rebase of #{number}")
 
-              runs = (api.call("GET", f"/commits/{head_sha}/check-runs?check_name={gate_check}&per_page=10")
-                      or {}).get("check_runs", [])
+              query = urllib.parse.urlencode({"check_name": gate_check, "filter": "latest", "per_page": 10})
+              runs = (api.call("GET", f"/commits/{head_sha}/check-runs?{query}") or {}).get("check_runs", [])
               labels = {label["name"] for label in survivor.get("labels", [])}
-              if not runs or any(r["status"] != "completed" for r in runs):
-                  notes.append(f"`{gate_check}` has not completed on #{number}.")
-              elif any(r["conclusion"] not in ("success", "skipped", "neutral") for r in runs):
-                  notes.append(f"`{gate_check}` is red on #{number}: labelled `needs-fix` for the harness.")
+              conclusions = {r.get("conclusion") for r in runs if r.get("status") == "completed"}
+              gate = code(gate_check)
+              if conclusions & {"failure", "timed_out", "action_required"}:
+                  notes.append(f"{gate} is red on #{number}: labelled `needs-fix` for the harness.")
                   if "needs-fix" not in labels:
                       api.call("POST", f"/issues/{number}/labels", {"labels": ["needs-fix"]})
                       actions.append(f"labelled #{number} needs-fix")
+              elif not runs or any(r.get("status") != "completed" for r in runs) or conclusions != {"success"}:
+                  notes.append(f"{gate} has no green result on #{number} yet (pending, cancelled, skipped or missing).")
               else:
-                  notes.append(f"`{gate_check}` is green on #{number}; ready for the owner's manual merge.")
+                  notes.append(f"{gate} is green on #{number}; ready for the owner's manual merge.")
                   if "needs-fix" in labels:
                       api.call("DELETE", f"/issues/{number}/labels/needs-fix")
                       actions.append(f"removed needs-fix from #{number}")
@@ -176,8 +204,9 @@ jobs:
               event_name = os.environ.get("GITHUB_EVENT_NAME", "")
               now = datetime.datetime.now(datetime.timezone.utc)
               actions, notes, _ = guard(api, event_name, os.environ.get("GATE_CHECK", "ci-gate"),
-                                        os.environ.get("REQUEST_REBASE") == "true", now)
-              if event_name in ("schedule", "workflow_dispatch") or actions:
+                                        os.environ.get("REQUEST_REBASE") == "true", now,
+                                        os.environ.get("GROUP_NAME", "weekly"))
+              if event_name in ("schedule", "workflow_dispatch"):
                   tracker = ensure_tracker(api, os.environ["TRACKER_TITLE"], os.environ["TRACKER_LABEL"])
                   content = "\n".join([f"### Weekly dependency PR (updated {now:%Y-%m-%d %H:%M} UTC)", "",
                                        *[f"- {n}" for n in notes], *[f"- Action: {a}" for a in actions]])

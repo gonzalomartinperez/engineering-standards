@@ -26,7 +26,20 @@ class VulnDailyTests(unittest.TestCase):
         content, counts = M.render(M.parse_osv(OSV), [], now)
         self.assertEqual(counts, {"CRITICAL": 1, "HIGH": 1, "UNKNOWN": 1})
         self.assertNotIn("@", content)
-        self.assertIn("| CRITICAL | GHSA-2 | lodash |", content)
+        self.assertIn("| CRITICAL | `GHSA-2` | `lodash` |", content)
+
+    def test_alias_groups_count_once_and_scoped_names_cannot_mention(self):
+        data = {"results": [{"source": {"path": "package-lock.json"}, "packages": [
+            {"package": {"name": "@babel/core", "version": "7.0.0", "ecosystem": "npm"},
+             "groups": [{"ids": ["GHSA-a", "CVE-1"]}],
+             "vulnerabilities": [{"id": "GHSA-a", "database_specific": {"severity": "HIGH"}}, {"id": "CVE-1"}]}]}]}
+        rows = M.parse_osv(data)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["severity"], "HIGH")
+        content, counts = M.render(rows, [], datetime.datetime(2026, 11, 16, tzinfo=datetime.timezone.utc))
+        self.assertEqual(counts, {"HIGH": 1})
+        self.assertIn("`@babel/core`", content)
+        self.assertNotRegex(content.replace("`@babel/core`", ""), r"(?<!`)@\w")
 
     def test_render_empty(self):
         content, counts = M.render([], [], datetime.datetime(2026, 11, 16, tzinfo=datetime.timezone.utc))

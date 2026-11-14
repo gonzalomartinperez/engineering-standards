@@ -26,7 +26,7 @@ on:
   workflow_call:
     inputs:
       images:
-        description: Newline-separated image references (by digest) to scan with Grype.
+        description: Newline-separated image references (by digest) to scan with Grype (public or anonymously pullable images).
         type: string
         default: ""
       summary-weekday:
@@ -77,7 +77,8 @@ jobs:
           import json, sys
           try:
               with open("osv-results.json", encoding="utf-8") as fh:
-                  json.load(fh)
+                  if not isinstance(json.load(fh).get("results"), list):
+                      raise ValueError("no 'results' list")
           except Exception as exc:  # noqa: BLE001
               print(f"::error title=osv-scanner::no usable result ({exc})")
               sys.exit(1)
@@ -111,6 +112,9 @@ jobs:
     needs: scan
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    concurrency:
+      group: tracking-issue-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       contents: read
       issues: write
@@ -137,7 +141,7 @@ jobs:
           TRACKER_LABEL: ${{ inputs.tracker-label }}
         run: |
           # vuln-daily v1 — tests extract this block and run it against fixtures and a fake API.
-          import datetime, glob, json, os, re, sys, urllib.error, urllib.request
+          import datetime, glob, json, os, re, sys, urllib.error, urllib.parse, urllib.request
 
           SECTION = "vuln-daily"
           ART = datetime.timezone(datetime.timedelta(hours=-3))  # America/Argentina/Buenos_Aires, no DST
@@ -149,6 +153,19 @@ jobs:
               (re.compile(r"^aquasecurity/trivy-action@"), "aquasecurity/trivy-action (2026-03 tag compromise)"),
               (re.compile(r"^aquasecurity/setup-trivy@"), "aquasecurity/setup-trivy (2026-03 tag compromise)"),
           ]
+
+
+          SEVERITY_ORDER = ["CRITICAL", "HIGH", "MODERATE", "MEDIUM", "LOW", "UNKNOWN"]
+
+
+          def code(value):
+              """Inline code span: neutralises @-mentions (scoped packages), #-references, pipes, newlines."""
+              text = " ".join(re.sub(r"[`|]+", " ", str(value)).split())
+              return f"`{text}`"
+
+
+          def worst(severities):
+              return min(severities, key=lambda s: SEVERITY_ORDER.index(s) if s in SEVERITY_ORDER else len(SEVERITY_ORDER))
 
 
           def severity_of(vuln):
@@ -165,11 +182,19 @@ jobs:
                   source = result.get("source", {}).get("path", "?")
                   for pkg in result.get("packages", []):
                       p = pkg.get("package", {})
-                      for vuln in pkg.get("vulnerabilities", []):
-                          rows.append({"id": vuln.get("id", "?"), "package": p.get("name", "?"),
+                      vulns = {v.get("id", "?"): v for v in pkg.get("vulnerabilities", [])}
+                      # One finding per alias group (GHSA, PYSEC, CVE of the same flaw are one row).
+                      groups = [g.get("ids", []) for g in pkg.get("groups", [])] or [[i] for i in vulns]
+                      for ids in groups:
+                          ids = [i for i in ids if i in vulns] or ids
+                          if not ids:
+                              continue
+                          rows.append({"id": ", ".join(ids), "package": p.get("name", "?"),
                                        "version": p.get("version", "?"), "ecosystem": p.get("ecosystem", "?"),
-                                       "severity": severity_of(vuln), "source": source})
-              return sorted(rows, key=lambda r: (r["severity"] != "CRITICAL", r["severity"] != "HIGH", r["package"], r["id"]))
+                                       "severity": worst([severity_of(vulns[i]) for i in ids if i in vulns] or ["UNKNOWN"]),
+                                       "source": source})
+              return sorted(rows, key=lambda r: (SEVERITY_ORDER.index(r["severity"]) if r["severity"] in SEVERITY_ORDER else 99,
+                                                 r["package"], r["id"]))
 
 
           def parse_grype(paths):
@@ -195,7 +220,7 @@ jobs:
                               continue
                           for pattern, label in COMPROMISED:
                               if pattern.match(m.group(1)):
-                                  hits.append(f"`{path}:{n}` uses {label}")
+                                  hits.append(f"{code(f'{path}:{n}')} uses {code(label)}")
                                   break
               return hits
 
@@ -210,7 +235,8 @@ jobs:
                   lines += ["", "**Compromise watch:** " + "; ".join(hits)]
               if rows:
                   lines += ["", "| Severity | ID | Package | Version | Source |", "|---|---|---|---|---|"]
-                  lines += [f"| {r['severity']} | {r['id']} | {r['package']} | {r['version']} | `{r['source']}` |" for r in rows[:100]]
+                  lines += [f"| {r['severity']} | {code(r['id'])} | {code(r['package'])} | {code(r['version'])} | {code(r['source'])} |"
+                            for r in rows[:100]]
                   if len(rows) > 100:
                       lines.append(f"\n{len(rows) - 100} more in the run artifact.")
               lines += ["", "SLA (ecosystem 5.5): KEV or exploited 72 h; critical 7 days (may ride the weekly PR); "
@@ -243,8 +269,9 @@ jobs:
                       return json.loads(raw) if raw else None
 
               title, label = os.environ["TRACKER_TITLE"], os.environ["TRACKER_LABEL"]
-              tracker = next((i for i in call("GET", f"/issues?state=open&labels={label}&per_page=100") or []
-                              if i.get("title") == title and "pull_request" not in i), None)
+              candidates = [i for i in call("GET", f"/issues?state=open&labels={urllib.parse.quote(label)}&per_page=100") or []
+                            if "pull_request" not in i]
+              tracker = next((i for i in candidates if i.get("title") == title), candidates[0] if candidates else None)
               if tracker is None:
                   try:
                       call("POST", "/labels", {"name": label, "color": "b60205", "description": "Dependency and vulnerability tracking"})
@@ -257,8 +284,8 @@ jobs:
               start, end = f"<!-- {SECTION}:start -->", f"<!-- {SECTION}:end -->"
               body = tracker.get("body") or ""
               block = f"{start}\n{content}\n{end}"
-              body = (body[: body.index(start)] + block + body[body.index(end) + len(end):]) if start in body and end in body \
-                  else body.rstrip() + "\n\n" + block + "\n"
+              i, j = body.find(start), body.find(end)
+              body = body[:i] + block + body[j + len(end):] if i != -1 and j > i else body.rstrip() + "\n\n" + block + "\n"
               call("PATCH", f"/issues/{tracker['number']}", {"body": body})
               if should_summarize(now, int(os.environ.get("SUMMARY_WEEKDAY", "1")), os.environ.get("FORCE_SUMMARY") == "true"):
                   total = sum(counts.values())

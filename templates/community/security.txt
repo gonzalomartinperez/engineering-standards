@@ -1,0 +1,8 @@
+# RFC 9116 security.txt template from engineering-standards.
+# Serve at https://<domain>/.well-known/security.txt (text/plain). Not byte-checked by drift.
+# Replace <placeholders>; renew Expires at least yearly (a scheduled check should fail 30 days before).
+Contact: https://github.com/gonzalomartinperez/<repo>/security/advisories/new
+Expires: <YYYY-MM-DD>T00:00:00.000Z
+Preferred-Languages: en, es
+Canonical: https://<domain>/.well-known/security.txt
+Policy: https://github.com/gonzalomartinperez/<repo>/blob/<default-branch>/SECURITY.md
