@@ -13,7 +13,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -30,7 +30,7 @@ jobs:
     permissions:
       contents: read
     with:
-      lychee-args: "--offline --no-progress --include-fragments --exclude-path standard './**/*.md'"
+      lychee-args: "--offline --no-progress --include-fragments --exclude-path standard --exclude-path templates/readme './**/*.md'"
       readme-check: false
 
   security:
@@ -62,6 +62,14 @@ jobs:
         run: uvx yamllint==1.38.0 -s .
       - name: actionlint
         run: uvx --from actionlint-py==1.7.12.25 actionlint
+      - name: actionlint (workflow templates with placeholder pins substituted)
+        run: |
+          dir="$RUNNER_TEMP/templates-lint"
+          mkdir -p "$dir/.github/workflows"
+          for f in templates/workflows/*.yml; do
+            sed "s/STANDARDS_SHA/0123456789abcdef0123456789abcdef01234567/g; s/STANDARDS_TAG/v1.0.0/g" "$f" > "$dir/.github/workflows/$(basename "$f")"
+          done
+          cd "$dir" && git init -q && uvx --from actionlint-py==1.7.12.25 actionlint
       - name: shellcheck
         run: |
           shopt -s nullglob

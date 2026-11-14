@@ -1,0 +1,94 @@
+# CI entry point for an adopter repository (ecosystem 6.0). Copy to .github/workflows/ci.yml, replace
+# STANDARDS_SHA and STANDARDS_TAG with the release commit and tag (see docs/how-to/adopt.md), and
+# replace the example lint/test jobs with the repository's own; every job id must be a name used in
+# .github/ci-profile.json (base or adds) and must be listed in ci-gate.needs.
+name: ci
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled, edited]
+  push:
+    branches: [develop, main]   # main-only repositories: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  # PRs: one run per ref, newer pushes cancel older runs. Other events: one group per commit, so a
+  # queued push run is never replaced by a later one.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  classify:
+    uses: gonzalomartinperez/engineering-standards/.github/workflows/classify.yml@STANDARDS_SHA # STANDARDS_TAG
+    permissions:
+      contents: read
+      pull-requests: read
+
+  docs:
+    needs: classify
+    if: contains(fromJSON(needs.classify.outputs.jobs), 'docs')
+    uses: gonzalomartinperez/engineering-standards/.github/workflows/docs.yml@STANDARDS_SHA # STANDARDS_TAG
+    permissions:
+      contents: read
+
+  security:
+    needs: classify
+    if: contains(fromJSON(needs.classify.outputs.jobs), 'security')
+    uses: gonzalomartinperez/engineering-standards/.github/workflows/security.yml@STANDARDS_SHA # STANDARDS_TAG
+    permissions:
+      contents: read
+      pull-requests: read
+    with:
+      dependency-review: true   # private repositories without GitHub Advanced Security: false
+
+  lint:
+    needs: classify
+    if: contains(fromJSON(needs.classify.outputs.jobs), 'lint')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: gonzalomartinperez/engineering-standards/actions/setup-node@STANDARDS_SHA # STANDARDS_TAG
+      - run: npm run lint
+
+  test:
+    needs: classify
+    if: contains(fromJSON(needs.classify.outputs.jobs), 'test')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: gonzalomartinperez/engineering-standards/actions/setup-node@STANDARDS_SHA # STANDARDS_TAG
+      - run: npm test
+
+  ci-gate:
+    if: always()
+    needs: [classify, docs, security, lint, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: gonzalomartinperez/engineering-standards/actions/ci-gate@STANDARDS_SHA # STANDARDS_TAG
+        with:
+          needs: ${{ toJSON(needs) }}
+          expected: ${{ needs.classify.outputs.jobs }}
