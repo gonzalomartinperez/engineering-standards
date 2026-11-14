@@ -16,13 +16,13 @@
         "standard/**", "progress/**", "tokens/**", "eval-tooling/**", "VERSION", ".gitignore",
         ".yamllint.yml", ".markdownlint-cli2.jsonc"
       ],
-      "adds": ["lint", "test", "security"],
+      "adds": ["lint", "test"],
       "budgetP50Minutes": 3,
       "budgetP95Minutes": 6
     },
     "workflow": {
       "paths": [".github/**", "actions/**"],
-      "adds": ["lint", "test", "security", "self-test"],
+      "adds": ["lint", "test", "self-test"],
       "budgetP50Minutes": 4,
       "budgetP95Minutes": 8
     },

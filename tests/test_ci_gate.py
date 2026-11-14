@@ -36,6 +36,15 @@ class CiGateTests(unittest.TestCase):
     def test_invalid_json_fails_closed(self):
         self.assertFalse(M.evaluate("not json", "")[0])
 
+    def test_expected_job_skipped_fails(self):
+        self.assertFalse(M.evaluate(needs(classify="success", unit="skipped"), "classify", '["unit"]')[0])
+
+    def test_expected_job_absent_from_needs_is_ignored(self):
+        self.assertTrue(M.evaluate(needs(classify="success"), "classify", '["tsc"]')[0])
+
+    def test_expected_not_array_fails(self):
+        self.assertFalse(M.evaluate(needs(classify="success"), "classify", '{"a": 1}')[0])
+
     def test_unknown_result_fails(self):
         self.assertFalse(M.evaluate(needs(classify="success", x="neutral"), "classify")[0])
 

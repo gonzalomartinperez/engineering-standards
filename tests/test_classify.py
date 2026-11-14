@@ -29,12 +29,12 @@ def pr_event(head="feat/x", base="develop", labels=()):
                              "labels": [{"name": n} for n in labels]}}
 
 
-def run(files, event_name="pull_request", event=None, config=CONFIG, full_on_push=True):
+def run(files, event_name="pull_request", event=None, config=CONFIG):
     def get_files():
         if isinstance(files, Exception):
             raise files
         return files
-    return M.classify(config, event_name, event or pr_event(), ".github/ci-profile.json", full_on_push, get_files)
+    return M.classify(config, event_name, event or pr_event(), ".github/ci-profile.json", get_files)
 
 
 class GlobTests(unittest.TestCase):
@@ -117,19 +117,27 @@ class ClassifyTests(unittest.TestCase):
         self.assertTrue(r["all"])
         self.assertEqual(r["profile"], "full")
 
-    def test_push_without_full_on_push_uses_diff_rules_but_fails_closed(self):
-        # push has no PR diff source: fail closed through the diff error path
-        r = run(RuntimeError("no diff source for event push"), event_name="push", event={}, full_on_push=False)
+    def test_profile_map_change_with_dot_slash_path(self):
+        r = M.classify(CONFIG, "pull_request", pr_event(), "./.github/ci-profile.json", lambda: [".github/ci-profile.json"])
         self.assertTrue(r["all"])
+
+    def test_all_means_every_job(self):
+        r = run(["Makefile"])
+        expected = ["secrets", "markdown", "links", "lint", "unit", "release-verify", "full-matrix", "actionlint", "zizmor"]
+        self.assertEqual(sorted(r["jobs"]), sorted(expected))
+
+    def test_reason_with_control_characters_is_quoted(self):
+        r = run(["src/a.ts", "x\rjobs=[]\ry"])
+        self.assertTrue(r["all"])
+        self.assertNotIn("\r", r["reason"])
 
     def test_unknown_event_fails_closed(self):
         self.assertTrue(run(["src/a.ts"], event_name="issue_comment", event={})["all"])
 
-    def test_merge_group_uses_paths(self):
-        event = {"merge_group": {"head_ref": "refs/heads/gh-readonly-queue/main/pr-1", "base_ref": "refs/heads/main",
-                                 "base_sha": "a", "head_sha": "b"}}
+    def test_merge_group_runs_everything(self):
+        event = {"merge_group": {"head_ref": "refs/heads/gh-readonly-queue/main/pr-1", "base_ref": "refs/heads/main"}}
         r = run(["docs/a.md"], event_name="merge_group", event=event)
-        self.assertEqual(r["profile"], "docs")
+        self.assertTrue(r["all"])
 
     def test_custom_match_conditions(self):
         config = {"base": [], "profiles": {
@@ -142,38 +150,43 @@ class ClassifyTests(unittest.TestCase):
 
 
 class MainEntryPointTests(unittest.TestCase):
-    """Runs the embedded script end to end as the runner would (`python {0}`)."""
+    """Runs the embedded script end to end as the runner would (`python {0}`), without network."""
 
-    def _run_main(self, event_name, event, config, files):
+    def _run_main(self, event_name, event, config):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = pathlib.Path(tmp)
             (tmp / "event.json").write_text(json.dumps(event))
-            (tmp / "files.txt").write_text("\n".join(files))
             cfg = tmp / "ci-profile.json"
             if config is not None:
                 cfg.write_text(config if isinstance(config, str) else json.dumps(config))
             (tmp / "script.py").write_text(embedded_script(WF, step_id="classify"))
             env = {**os.environ, "GITHUB_EVENT_NAME": event_name, "GITHUB_EVENT_PATH": str(tmp / "event.json"),
-                   "GITHUB_OUTPUT": str(tmp / "out"), "CONFIG_PATH": str(cfg), "FULL_ON_PUSH": "true",
-                   "CLASSIFY_CHANGED_FILES_FILE": str(tmp / "files.txt")}
+                   "GITHUB_OUTPUT": str(tmp / "out"), "CONFIG_PATH": str(cfg)}
             env.pop("GITHUB_STEP_SUMMARY", None)
-            subprocess.run([sys.executable, "-I", str(tmp / "script.py")], env=env, check=True, capture_output=True)
-            return dict(line.split("=", 1) for line in (tmp / "out").read_text().splitlines())
+            proc = subprocess.run([sys.executable, "-I", str(tmp / "script.py")], env=env, capture_output=True, text=True)
+            out = (tmp / "out").read_text() if (tmp / "out").exists() else ""
+            return proc.returncode, dict(line.split("=", 1) for line in out.splitlines())
 
-    def test_outputs_written(self):
-        out = self._run_main("pull_request", pr_event(), CONFIG, ["docs/a.md"])
-        self.assertEqual(out["profile"], "docs")
-        self.assertEqual(out["docs-only"], "true")
-        self.assertEqual(json.loads(out["jobs"]), ["secrets", "markdown", "links"])
-
-    def test_invalid_config_fails_closed(self):
-        out = self._run_main("pull_request", pr_event(), "{not json", ["docs/a.md"])
-        self.assertEqual(out["all"], "true")
+    def test_outputs_written_on_push(self):
+        code, out = self._run_main("push", {}, CONFIG)
+        self.assertEqual(code, 0)
         self.assertEqual(out["profile"], "full")
-
-    def test_missing_config_fails_closed(self):
-        out = self._run_main("pull_request", pr_event(), None, ["docs/a.md"])
         self.assertEqual(out["all"], "true")
+        self.assertIn("unit", json.loads(out["jobs"]))
+
+    def test_invalid_config_fails_the_job(self):
+        code, out = self._run_main("pull_request", pr_event(), "{not json")
+        self.assertEqual(code, 1)
+        self.assertEqual(out, {})
+
+    def test_missing_config_fails_the_job(self):
+        self.assertEqual(self._run_main("pull_request", pr_event(), None)[0], 1)
+
+    def test_empty_profiles_fails_the_job(self):
+        self.assertEqual(self._run_main("pull_request", pr_event(), {"base": ["x"], "profiles": {}})[0], 1)
+
+    def test_profile_without_paths_or_match_fails_the_job(self):
+        self.assertEqual(self._run_main("push", {}, {"profiles": {"tools": {"adds": ["x"]}}})[0], 1)
 
 
 class OwnProfileMapTests(unittest.TestCase):

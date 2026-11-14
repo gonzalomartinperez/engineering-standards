@@ -4,6 +4,7 @@ name: ci
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
   push:
     branches: [main]
   merge_group:
@@ -109,6 +110,13 @@ jobs:
         uses: ./actions/ci-gate
         with:
           needs: '{"classify":{"result":"success"},"docs":{"result":"skipped"}}'
+      - name: ci-gate fails when an expected job was skipped
+        id: gate-expected
+        continue-on-error: true
+        uses: ./actions/ci-gate
+        with:
+          needs: '{"classify":{"result":"success"},"test":{"result":"skipped"}}'
+          expected: '["test"]'
       - name: ci-gate fails on a failed job
         id: gate-negative
         continue-on-error: true
@@ -118,7 +126,8 @@ jobs:
       - name: Assert the negative case failed
         env:
           OUTCOME: ${{ steps.gate-negative.outcome }}
-        run: test "$OUTCOME" = "failure"
+          OUTCOME_EXPECTED: ${{ steps.gate-expected.outcome }}
+        run: test "$OUTCOME" = "failure" && test "$OUTCOME_EXPECTED" = "failure"
       - name: Assert classify produced a profile
         env:
           PROFILE: ${{ needs.classify.outputs.profile }}
@@ -146,3 +155,4 @@ jobs:
       - uses: ./actions/ci-gate
         with:
           needs: ${{ toJSON(needs) }}
+          expected: ${{ needs.classify.outputs.jobs }}

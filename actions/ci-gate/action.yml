@@ -13,6 +13,11 @@
 #       - uses: gonzalomartinperez/engineering-standards/actions/ci-gate@<sha> # vX.Y.Z
 #         with:
 #           needs: ${{ toJSON(needs) }}
+#           expected: ${{ needs.classify.outputs.jobs }}
+#
+# `needs` must list every other job of the workflow. Jobs named in `expected` (classify's `jobs`
+# output) must succeed: a skip there means a mistaken `if:` and fails the gate. Other skipped jobs
+# pass as "not applicable".
 name: ci-gate
 description: Fail-closed aggregation of the results of every needed job.
 inputs:
@@ -23,6 +28,10 @@ inputs:
     description: Comma-separated job ids that must succeed and may never be skipped.
     required: false
     default: classify
+  expected:
+    description: JSON array of job ids that classify selected (`needs.classify.outputs.jobs`); each must succeed if present in needs.
+    required: false
+    default: "[]"
 runs:
   using: composite
   steps:
@@ -31,12 +40,13 @@ runs:
       env:
         NEEDS_JSON: ${{ inputs.needs }}
         REQUIRED_JOBS: ${{ inputs.required }}
+        EXPECTED_JOBS: ${{ inputs.expected }}
       run: |
         # ci-gate v1 — tests extract and run this block.
         import json, os, sys
 
 
-        def evaluate(needs_json, required_csv):
+        def evaluate(needs_json, required_csv, expected_json="[]"):
             try:
                 needs = json.loads(needs_json)
             except ValueError as exc:
@@ -44,6 +54,13 @@ runs:
             if not isinstance(needs, dict) or not needs:
                 return False, ["needs is empty: the gate must list every job (fail closed)"]
             required = {j.strip() for j in required_csv.split(",") if j.strip()}
+            try:
+                expected = json.loads(expected_json or "[]")
+                if not isinstance(expected, list):
+                    raise ValueError("expected must be a JSON array")
+            except ValueError as exc:
+                return False, [f"expected is not a JSON array ({exc})"]
+            required |= {str(j) for j in expected if str(j) in needs}
             ok, lines = True, []
             for job in sorted(needs):
                 result = (needs[job] or {}).get("result", "missing")
@@ -62,7 +79,8 @@ runs:
 
 
         def main():
-            ok, lines = evaluate(os.environ.get("NEEDS_JSON", ""), os.environ.get("REQUIRED_JOBS", ""))
+            ok, lines = evaluate(os.environ.get("NEEDS_JSON", ""), os.environ.get("REQUIRED_JOBS", ""),
+                                 os.environ.get("EXPECTED_JOBS", "[]"))
             table = "\n".join(["| Job | Result | Gate |", "|---|---|---|", *lines]) if lines and lines[0].startswith("|") else "\n".join(lines)
             summary = os.environ.get("GITHUB_STEP_SUMMARY")
             if summary:
@@ -70,7 +88,7 @@ runs:
                     out.write(f"### ci-gate: {'green' if ok else 'red'}\n\n{table}\n")
             print(table)
             if not ok:
-                print("::error title=ci-gate::a needed job failed, was cancelled, or a required job was skipped")
+                print("::error title=ci-gate::a needed job failed, was cancelled, or a required or expected job was skipped")
             return 0 if ok else 1
 
 
