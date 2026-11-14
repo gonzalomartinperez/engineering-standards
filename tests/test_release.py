@@ -16,3 +16,31 @@ class ReleaseMetadataTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReleaseNotesExtractionTests(unittest.TestCase):
+    def test_notes_stop_before_link_references(self):
+        import os
+        import pathlib
+        import subprocess
+        import sys
+        import tempfile
+
+        from helpers import embedded_script
+
+        script = embedded_script(".github/workflows/release.yml", step_name="Read version and release notes")
+        with tempfile.TemporaryDirectory() as tmp:
+            t = pathlib.Path(tmp)
+            (t / "VERSION").write_text("1.2.3\n")
+            (t / "CHANGELOG.md").write_text("# Changelog\n\n## [Unreleased]\n\n## [1.2.3] - 2026-01-01\n\n### Added\n\n- x\n\n"
+                                            "## [1.2.2] - 2025-12-01\n\n- old\n\n[1.2.3]: https://example.test\n")
+            (t / "s.py").write_text(script)
+            env = {**os.environ, "GITHUB_OUTPUT": str(t / "out"), "RUNNER_TEMP": tmp}
+            subprocess.run([sys.executable, "-I", str(t / "s.py")], cwd=tmp, env=env, check=True)
+            notes = (t / "notes.md").read_text()
+            self.assertIn("- x", notes)
+            self.assertNotIn("old", notes)
+            (t / "CHANGELOG.md").write_text("## [1.2.3] - 2026-01-01\n\n- y\n\n[1.2.3]: https://example.test\n")
+            subprocess.run([sys.executable, "-I", str(t / "s.py")], cwd=tmp, env=env, check=True)
+            self.assertNotIn("example.test", (t / "notes.md").read_text())
+            self.assertIn("has_section=true", (t / "out").read_text())

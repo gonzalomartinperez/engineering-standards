@@ -58,5 +58,5 @@ repository's progress.md holds the exact merge evidence.
 
 | Date | Repository | Event | Evidence |
 |---|---|---|---|
-| 2026-11-14 | engineering-standards | Repository created (public), rulesets on `main` and `v*` tags, shared CI v1, release v1.0.0 | PRs #1–#6 |
+| 2026-11-14 | engineering-standards | Repository created (public), rulesets on `main` and `v*` tags, shared CI v1; release PR #6 (v1.0.0) | PRs #1–#6 |
 | 2026-11-14 | dependabot-sandbox | E2 proof run; points 3 and 4 proven, 1 and 2 pending the Monday run | ADR 0002 |

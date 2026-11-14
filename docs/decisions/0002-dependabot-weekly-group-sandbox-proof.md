@@ -11,7 +11,7 @@ Ecosystem standard 5.4 blocks the Dependabot rollout until four points are prove
 honoured on groups; (3) `uv` and `github-actions` are accepted in a multi-ecosystem group;
 (4) cooldown applies inside groups. `shared/dependabot-rule.md` also lists rules verified only by
 configuration validation: group-level `open-pull-requests-limit` and `commit-message`, semver cooldown
-keys only for npm/uv, one grouped PR per week, never two open PRs.
+keys only for npm/uv, one grouped PR per week, never two open PRs (`standard/dependabot-rule.md`).
 
 ## Experiment
 
@@ -58,7 +58,7 @@ Versions in PR #1 against the cooldown expectations (release ages on 2026-11-14)
    docker-compose): configuration accepted; all five ecosystems in one PR.
 4. **Cooldown inside groups — proven** for npm and uv with 7/14/3 (table above).
 
-Verified rules from `shared/dependabot-rule.md`, confirmed live: group-level
+Verified rules from `standard/dependabot-rule.md`, confirmed live: group-level
 `open-pull-requests-limit: 1`, `commit-message` and `labels` accepted and applied (title prefix
 `chore(deps):`, label `dependencies`); group-level `target-branch: develop` honoured; semver cooldown
 keys on npm and uv accepted next to `default-days` only on github-actions/docker/docker-compose; with
@@ -68,7 +68,11 @@ security-update PRs disabled, seven open alerts produced no security PR.
 
 Roll out `templates/dependabot/{release,main-only}.yml` now (points 3 and 4 and the verified rules
 hold; the shape is the one Dependabot accepted). Keep `deps-weekly-guard` as the safety net: it keeps
-only the newest weekly group PR and flags a red one. Until point 1's in-place refresh is observed, the
+only the newest weekly group PR and flags a red one. Observed head refs
+(`dependabot/develop/weekly-16552b0e40`, `-0484366d6e`, `-5048a3c2b0`) match the guard's
+`dependabot/<target>/<group>-<hex>` rule. The guard itself was exercised only against a fake API; its
+first live runs (Dependabot-triggered `pull_request` with explicit write `permissions:`, and the
+Monday schedule) are part of each adopter's M1 verification. Until point 1's in-place refresh is observed, the
 operational rule is: when the owner wants a stale open weekly PR to pick up newer versions before the
 next Monday, close it; the next run opens one complete PR.
 

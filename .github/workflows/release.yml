@@ -36,13 +36,26 @@ jobs:
           if not re.fullmatch(r"\d+\.\d+\.\d+", version):
               print(f"::error title=release::VERSION {version!r} is not X.Y.Z"); sys.exit(1)
           changelog = open("CHANGELOG.md", encoding="utf-8").read()
-          m = re.search(rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|\Z)", changelog, re.M | re.S)
+          m = re.search(rf"^## \[{re.escape(version)}\][^\n]*\n(.*?)(?=^## \[|^\[[^\]]+\]: |\Z)", changelog, re.M | re.S)
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
               out.write(f"version={version}\n")
               out.write(f"has_section={'true' if m else 'false'}\n")
+          if m and not m.group(1).strip():
+              print(f"::error title=release::CHANGELOG section [{version}] is empty"); sys.exit(1)
           if m:
               with open(os.path.join(os.environ["RUNNER_TEMP"], "notes.md"), "w", encoding="utf-8") as fh:
                   fh.write(m.group(1).strip() + "\n")
+      - name: Fail when VERSION has no CHANGELOG section and no release
+        if: steps.notes.outputs.has_section != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.notes.outputs.version }}
+        run: |
+          if gh release view "v${VERSION}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            exit 0
+          fi
+          echo "::error title=release::VERSION ${VERSION} has no CHANGELOG section and no release"
+          exit 1
       - name: Create tag and release
         if: steps.notes.outputs.has_section == 'true'
         env:

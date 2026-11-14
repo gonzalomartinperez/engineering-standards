@@ -9,7 +9,8 @@ normal task-branch PR in the adopter repository; nothing here pushes to protecte
 gh release list -R gonzalomartinperez/engineering-standards --limit 5
 TAG=v1.0.0                                                   # the latest v1.x
 SHA=$(gh api repos/gonzalomartinperez/engineering-standards/commits/$TAG --jq .sha)
-git clone --depth 1 --branch "$TAG" https://github.com/gonzalomartinperez/engineering-standards.git /tmp/es-$TAG
+ES=$(mktemp -d)                                              # used as $ES below
+git clone --depth 1 --branch "$TAG" https://github.com/gonzalomartinperez/engineering-standards.git "$ES"
 ```
 
 Every reference to this repository is pinned to `$SHA` with `# $TAG` as the comment. Dependabot's
@@ -20,8 +21,8 @@ weekly group bumps those pins (github-actions ecosystem) together with everythin
 1. Copy the caller and the example profile map, then fill in the pins:
 
    ```bash
-   cp /tmp/es-$TAG/templates/workflows/ci.yml .github/workflows/ci.yml
-   cp /tmp/es-$TAG/templates/ci-profile/ci-profile.example.json .github/ci-profile.json
+   cp $ES/templates/workflows/ci.yml .github/workflows/ci.yml
+   cp $ES/templates/ci-profile/ci-profile.example.json .github/ci-profile.json
    sed -i "s/STANDARDS_SHA/$SHA/g; s/STANDARDS_TAG/$TAG/g" .github/workflows/ci.yml
    ```
 
@@ -68,10 +69,10 @@ Already wired in the `ci.yml` template:
 
 | Job | Reusable workflow | Notes |
 |---|---|---|
-| `docs` | `docs.yml` | markdownlint, lychee (offline), README template check (`readme-check: false` until the README is migrated) |
+| `docs` | `docs.yml` | markdownlint, lychee (offline), README template check (the template passes `readme-check: false`; set it to `true` once the README follows the template) |
 | `security` | `security.yml` | zizmor, actionlint, gitleaks, dependency-review (`dependency-review: false` on private repos without GHAS) |
 
-The docs profile must add `security` (secret scan on docs-only PRs). CodeQL: default setup, see
+The secret scan must run on docs-only PRs: put `security` in `base` (as the example map does) or in the docs profile's `adds`. CodeQL: default setup, see
 [codeql.md](codeql.md). Scorecard (public repos): copy `templates/workflows/scorecard.yml` as is.
 
 ## 3. Setup actions (step level)
@@ -90,10 +91,10 @@ Set `cache: "false"` in release or publish jobs.
 ## 4. Dependabot weekly PR, guard and daily vulnerability job
 
 ```bash
-cp /tmp/es-$TAG/templates/dependabot/release.yml .github/dependabot.yml      # release repos (develop)
-cp /tmp/es-$TAG/templates/dependabot/main-only.yml .github/dependabot.yml    # vps-ops, pequeverso-marketing, dropshipping-ops
+FLOW=release   # or main-only for vps-ops, pequeverso-marketing, dropshipping-ops
+cp "$ES/templates/dependabot/$FLOW.yml" .github/dependabot.yml
 for f in deps-weekly-guard vuln-daily drift; do
-  sed "s/STANDARDS_SHA/$SHA/g; s/STANDARDS_TAG/$TAG/g" /tmp/es-$TAG/templates/workflows/$f.yml > .github/workflows/$f.yml
+  sed "s/STANDARDS_SHA/$SHA/g; s/STANDARDS_TAG/$TAG/g" $ES/templates/workflows/$f.yml > .github/workflows/$f.yml
 done
 ```
 
@@ -110,26 +111,31 @@ done
 ## 5. standards.lock and drift
 
 ```bash
-python3 /tmp/es-$TAG/tools/standards_drift.py init --repo . --standards /tmp/es-$TAG \
+python3 $ES/tools/standards_drift.py init --repo . --standards $ES \
   --tag $TAG --flow release --visibility public        # main-only / private as appropriate
-uv run --with pyyaml==6.0.3 python /tmp/es-$TAG/tools/standards_drift.py check --repo . --standards /tmp/es-$TAG
+uv run --with pyyaml==6.0.3 python $ES/tools/standards_drift.py check --repo . --standards $ES
 ```
 
 `init` copies the byte-matched files listed in `templates/MANIFEST.json` (SECURITY, SUPPORT, Code of
 Conduct on public repos, PR template, issue forms, `docs/master-plan/ecosystem.md`,
 `docs/master-plan/rubrics.md`, the guard hooks) and writes `standards.lock`. Review the diff: the
-copies replace local versions. After a standards release: `standards_drift.py update --tag vX.Y.Z`
-with a checkout of that tag. The `drift` workflow fails on any difference and on a Dependabot policy
+copies replace local versions. After a standards release, check out the new tag into `$ES` and run
+`python3 "$ES/tools/standards_drift.py" update --repo . --standards "$ES" --tag vX.Y.Z`. The `drift` workflow fails on any difference and on a Dependabot policy
 violation; it warns when workflow pins and the lock disagree.
 
 ## 6. Rulesets
 
-Dry run first, then apply (repository admin; release repos protect `develop` and `main`):
+Dry run first and read its output (repository admin; release repos protect `develop` and `main`):
 
 ```bash
-/tmp/es-$TAG/scripts/apply-rulesets.sh --repo gonzalomartinperez/REPO --flow release            # dry run
-/tmp/es-$TAG/scripts/apply-rulesets.sh --repo gonzalomartinperez/REPO --flow release --apply
-/tmp/es-$TAG/scripts/apply-rulesets.sh --repo gonzalomartinperez/REPO --flow release --check    # drift
+"$ES/scripts/apply-rulesets.sh" --repo gonzalomartinperez/REPO --flow release            # dry run, writes nothing
+```
+
+Only after reviewing the dry run:
+
+```bash
+"$ES/scripts/apply-rulesets.sh" --repo gonzalomartinperez/REPO --flow release --apply
+"$ES/scripts/apply-rulesets.sh" --repo gonzalomartinperez/REPO --flow release --check    # later: drift report
 ```
 
 Apply only after `ci-gate` exists on the default branches, or every PR blocks. Main-only private
@@ -141,7 +147,7 @@ ecosystem 3.1. `pequeverso-marketing`: `--merge-methods squash`.
 | Asset | Command |
 |---|---|
 | Hooks | copied by `standards_drift.py init` to `.claude/hooks/`; wire them with `harness/claude/settings.json` (merge your allow rules) |
-| Codex | `cp /tmp/es-$TAG/harness/codex/config.toml .codex/config.toml`, then validate with the installed Codex |
-| Agents | `cp /tmp/es-$TAG/harness/agents/*.md .claude/agents/` and tune the commands |
-| Skills | `cp -r /tmp/es-$TAG/harness/skills/<name> .agents/skills/` and `ln -s ../../.agents/skills/<name> .claude/skills/<name>` |
-| Skill check | `python3 /tmp/es-$TAG/tools/check_skills.py --skills .agents/skills --claude-links .claude/skills` in the harness profile |
+| Codex | `cp $ES/harness/codex/config.toml .codex/config.toml`, then validate with the installed Codex |
+| Agents | `cp $ES/harness/agents/*.md .claude/agents/` and tune the commands |
+| Skills | `cp -r $ES/harness/skills/<name> .agents/skills/` and `ln -s ../../.agents/skills/<name> .claude/skills/<name>` |
+| Skill check | `python3 $ES/tools/check_skills.py --skills .agents/skills --claude-links .claude/skills` in the harness profile |

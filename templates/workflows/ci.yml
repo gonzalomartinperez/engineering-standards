@@ -33,6 +33,8 @@ jobs:
     uses: gonzalomartinperez/engineering-standards/.github/workflows/docs.yml@STANDARDS_SHA # STANDARDS_TAG
     permissions:
       contents: read
+    with:
+      readme-check: false   # true once README.md follows templates/readme/
 
   security:
     needs: classify
