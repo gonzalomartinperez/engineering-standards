@@ -5,6 +5,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-14
+
+### Added
+
+- Optional `runner` input on all reusable workflows, defaulting to `ubuntu-latest`, so private repositories can fall back to a self-hosted runner when hosted Actions minutes run out.
+
 ## [1.0.0] - 2026-11-14
 
 First release consumed by the ecosystem repositories (M1, decision E1). Adoption guide:
@@ -29,5 +35,6 @@ First release consumed by the ecosystem repositories (M1, decision E1). Adoption
 - Own CI with self-tests of the reusable workflow and action, and unit tests for the classify and gate logic and the workflow hardening policy.
 - Repository bootstrap: license, community files, PR and issue templates, Dependabot weekly group, lint configuration.
 
-[Unreleased]: https://github.com/gonzalomartinperez/engineering-standards/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/gonzalomartinperez/engineering-standards/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/gonzalomartinperez/engineering-standards/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/gonzalomartinperez/engineering-standards/releases/tag/v1.0.0

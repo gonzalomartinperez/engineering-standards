@@ -73,6 +73,10 @@ Requirements: Python 3.13+, [uv](https://docs.astral.sh/uv/), `jq`, `shellcheck`
 | Rulesets | `rulesets/`, `scripts/apply-rulesets.sh` | dry run, then `--apply` |
 | Harness | `harness/` (hooks, agents, settings, Codex, skills) | [harness/README.md](harness/README.md) |
 
+All reusable workflows accept an optional `runner` input (default: `ubuntu-latest`).
+When hosted Actions minutes run out on private repos, pass a self-hosted runner label via
+`runner: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}` under the caller job's `with:` and set `CI_RUNNER` to that label.
+
 Step-by-step adoption with exact snippets: [docs/how-to/adopt.md](docs/how-to/adopt.md).
 
 ## Quality

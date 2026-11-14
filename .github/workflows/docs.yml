@@ -4,6 +4,8 @@
 #     needs: classify
 #     if: contains(fromJSON(needs.classify.outputs.jobs), 'docs')
 #     uses: gonzalomartinperez/engineering-standards/.github/workflows/docs.yml@<sha> # vX.Y.Z
+#     with:
+#       runner: ${{ vars.CI_RUNNER || 'ubuntu-latest' }} # optional self-hosted label
 #     permissions:
 #       contents: read
 #
@@ -15,6 +17,10 @@ name: docs
 on:
   workflow_call:
     inputs:
+      runner:
+        description: Runner label for every job (default GitHub-hosted). Adopters pass a self-hosted label as a fallback when hosted minutes run out.
+        type: string
+        default: ubuntu-latest
       markdown-globs:
         description: Globs for markdownlint-cli2 (newline or space separated).
         type: string
@@ -42,7 +48,7 @@ permissions: {}
 
 jobs:
   markdown:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     permissions:
       contents: read
@@ -58,7 +64,7 @@ jobs:
           globs: ${{ inputs.markdown-globs }}
 
   links:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -79,7 +85,7 @@ jobs:
 
   readme:
     if: inputs.readme-check
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 3
     permissions:
       contents: read

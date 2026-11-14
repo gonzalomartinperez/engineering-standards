@@ -53,6 +53,30 @@ class WorkflowPolicyTests(unittest.TestCase):
             with self.subTest(file=rel):
                 self.assertNotIn("pull_request_target", triggers if isinstance(triggers, (dict, list)) else [triggers])
 
+    def test_reusable_workflows_use_configurable_runner(self):
+        workflows = sorted((ROOT / ".github/workflows").glob("*.yml"))
+        reusable_count = 0
+        for path in workflows:
+            rel = path.relative_to(ROOT).as_posix()
+            doc = load_yaml(rel)
+            triggers = doc.get(True) or doc.get("on") or {}
+            if not isinstance(triggers, dict) or "workflow_call" not in triggers:
+                continue
+            reusable_count += 1
+            call = triggers["workflow_call"] or {}
+            runner = (call.get("inputs") or {}).get("runner") or {}
+            with self.subTest(file=rel):
+                self.assertEqual(runner.get("type"), "string")
+                self.assertEqual(runner.get("default"), "ubuntu-latest")
+                self.assertFalse(runner.get("required", False))
+            for name, job in (doc.get("jobs") or {}).items():
+                with self.subTest(file=rel, job=name):
+                    self.assertIn(job.get("runs-on"), (
+                        "${{ inputs.runner }}",
+                        "${{ inputs.runner || 'ubuntu-latest' }}",
+                    ))
+        self.assertGreater(reusable_count, 0)
+
     def test_jobs_have_timeouts_and_explicit_permissions(self):
         for rel in FILES:
             for name, job in (load_yaml(rel).get("jobs") or {}).items():
