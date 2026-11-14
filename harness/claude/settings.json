@@ -20,8 +20,6 @@
       "Bash(uv run mypy:*)"
     ],
     "ask": [
-      "Bash(git push:*)",
-      "Bash(gh pr merge:*)",
       "Bash(gh release:*)"
     ],
     "deny": [
