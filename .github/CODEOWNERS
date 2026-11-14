@@ -1,0 +1,9 @@
+# Single maintainer; the map documents the sensitive surfaces (ecosystem standard 6.5).
+*                         @gonzalomartinperez
+/.github/workflows/       @gonzalomartinperez
+/actions/                 @gonzalomartinperez
+/rulesets/                @gonzalomartinperez
+/scripts/                 @gonzalomartinperez
+/harness/                 @gonzalomartinperez
+/templates/               @gonzalomartinperez
+/standard/                @gonzalomartinperez
