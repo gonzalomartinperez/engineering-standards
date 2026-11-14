@@ -11,7 +11,7 @@ uvx yamllint==1.38.0 -s .                          # YAML lint
 uvx --from actionlint-py==1.7.12.25 actionlint     # workflow lint
 uvx zizmor==1.32.0 --persona regular .github/workflows actions   # workflow security
 shellcheck scripts/*.sh                            # shell lint
-npx --yes markdownlint-cli2@0.22.0 "**/*.md"       # Markdown lint
+npx --yes markdownlint-cli2@0.24.1 "**/*.md"       # Markdown lint
 ```
 
 ## Flow (main-only)

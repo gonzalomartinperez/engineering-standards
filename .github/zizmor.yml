@@ -1,0 +1,5 @@
+# zizmor configuration (https://docs.zizmor.sh/configuration/).
+rules:
+  # Local `./` references are the portable form for self-testing reusable workflows and actions.
+  self-repository:
+    disable: true

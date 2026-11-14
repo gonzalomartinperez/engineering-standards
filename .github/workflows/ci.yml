@@ -1,0 +1,158 @@
+# CI of engineering-standards itself. It also self-tests the reusable workflows and composite
+# actions by calling them through local paths (`./.github/workflows/*.yml`, `./actions/*`).
+name: ci
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+  push:
+    branches: [main]
+  merge_group:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  classify:
+    uses: ./.github/workflows/classify.yml
+    permissions:
+      contents: read
+      pull-requests: read
+
+  markdown:
+    needs: classify
+    if: contains(fromJSON(needs.classify.outputs.jobs), 'markdown')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0
+        with:
+          globs: "**/*.md"
+
+  lint:
+    needs: classify
+    if: contains(fromJSON(needs.classify.outputs.jobs), 'lint')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: false
+      - name: yamllint
+        run: uvx yamllint==1.38.0 -s .
+      - name: actionlint
+        run: uvx --from actionlint-py==1.7.12.25 actionlint
+      - name: shellcheck
+        run: |
+          shopt -s nullglob
+          files=(scripts/*.sh harness/hooks/*.sh)
+          if [ ${#files[@]} -gt 0 ]; then shellcheck "${files[@]}"; else echo "no shell scripts"; fi
+      - name: JSON files parse
+        run: find . -name '*.json' -not -path './node_modules/*' -print0 | xargs -0 -n1 python3 -m json.tool --no-ensure-ascii > /dev/null
+
+  test:
+    needs: classify
+    if: contains(fromJSON(needs.classify.outputs.jobs), 'test')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Install PyYAML (tests parse workflow files)
+        run: python -m pip install --disable-pip-version-check --no-cache-dir "pyyaml==6.0.3"
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+  self-test:
+    needs: classify
+    if: contains(fromJSON(needs.classify.outputs.jobs), 'self-test')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ci-gate passes on success and skipped
+        uses: ./actions/ci-gate
+        with:
+          needs: '{"classify":{"result":"success"},"docs":{"result":"skipped"}}'
+      - name: ci-gate fails when an expected job was skipped
+        id: gate-expected
+        continue-on-error: true
+        uses: ./actions/ci-gate
+        with:
+          needs: '{"classify":{"result":"success"},"test":{"result":"skipped"}}'
+          expected: '["test"]'
+      - name: ci-gate fails on a failed job
+        id: gate-negative
+        continue-on-error: true
+        uses: ./actions/ci-gate
+        with:
+          needs: '{"classify":{"result":"success"},"test":{"result":"failure"}}'
+      - name: Assert the negative case failed
+        env:
+          OUTCOME: ${{ steps.gate-negative.outcome }}
+          OUTCOME_EXPECTED: ${{ steps.gate-expected.outcome }}
+        run: test "$OUTCOME" = "failure" && test "$OUTCOME_EXPECTED" = "failure"
+      - name: Assert classify produced a profile
+        env:
+          PROFILE: ${{ needs.classify.outputs.profile }}
+          JOBS: ${{ needs.classify.outputs.jobs }}
+        run: |
+          test -n "$PROFILE"
+          python3 -c 'import json,os; assert isinstance(json.loads(os.environ["JOBS"]), list)'
+
+  ci-gate:
+    if: always()
+    needs: [classify, markdown, lint, test, self-test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      # Adopters reference the action remotely and need no checkout; the local path needs one.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: actions/ci-gate
+      - uses: ./actions/ci-gate
+        with:
+          needs: ${{ toJSON(needs) }}
+          expected: ${{ needs.classify.outputs.jobs }}
