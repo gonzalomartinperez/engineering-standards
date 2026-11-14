@@ -1,0 +1,82 @@
+# Composite action: Node.js setup with the lockfile-keyed npm cache and a safe install (ecosystem 6.1, 7).
+#
+#   - uses: gonzalomartinperez/engineering-standards/actions/setup-node@<sha> # vX.Y.Z
+#     with:
+#       node-version-file: .nvmrc      # or node-version: "24"
+#
+# Caches the npm store (~/.npm) keyed on package-lock.json, never node_modules. Installs with
+# `npm ci --ignore-scripts` by default (install-time code is opt-in through `run-scripts: true`).
+name: setup-node
+description: Set up Node.js, restore the npm cache keyed on the lockfile and run npm ci.
+inputs:
+  node-version:
+    description: Node.js version (ignored when node-version-file is set).
+    required: false
+    default: ""
+  node-version-file:
+    description: File holding the Node.js version (.nvmrc, .node-version, package.json).
+    required: false
+    default: .nvmrc
+  working-directory:
+    description: Directory that holds package.json and package-lock.json.
+    required: false
+    default: "."
+  cache:
+    description: Use the npm cache (set false in release or publish jobs to avoid cache poisoning).
+    required: false
+    default: "true"
+  install:
+    description: Run npm ci after setup.
+    required: false
+    default: "true"
+  run-scripts:
+    description: Allow install scripts (npm ci without --ignore-scripts). Keep false unless a dependency needs a build.
+    required: false
+    default: "false"
+outputs:
+  node-version:
+    description: Installed Node.js version.
+    value: ${{ steps.setup.outputs.node-version }}
+  cache-hit:
+    description: Whether the npm cache was restored.
+    value: ${{ steps.setup.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    - name: Resolve version source
+      id: version
+      shell: bash
+      env:
+        VERSION_INPUT: ${{ inputs.node-version }}
+        VERSION_FILE: ${{ inputs.node-version-file }}
+        WORKDIR: ${{ inputs.working-directory }}
+      run: |
+        if [ -n "$VERSION_INPUT" ]; then
+          echo "file=" >> "$GITHUB_OUTPUT"
+        elif [ -f "$WORKDIR/$VERSION_FILE" ]; then
+          echo "file=$WORKDIR/$VERSION_FILE" >> "$GITHUB_OUTPUT"
+        else
+          echo "::error title=setup-node::set node-version or provide $WORKDIR/$VERSION_FILE"
+          exit 1
+        fi
+    - name: Set up Node.js
+      id: setup
+      uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: ${{ inputs.node-version }}
+        node-version-file: ${{ steps.version.outputs.file }}
+        cache: ${{ inputs.cache == 'true' && 'npm' || '' }}
+        package-manager-cache: ${{ inputs.cache == 'true' }}
+        cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
+    - name: npm ci
+      if: inputs.install == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        RUN_SCRIPTS: ${{ inputs.run-scripts }}
+      run: |
+        if [ "$RUN_SCRIPTS" = "true" ]; then
+          npm ci --no-audit --no-fund
+        else
+          npm ci --ignore-scripts --no-audit --no-fund
+        fi

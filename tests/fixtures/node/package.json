@@ -1,0 +1,9 @@
+{
+  "name": "fixture",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "semver": "7.8.6",
+    "marker-pkg": "file:./marker-pkg"
+  }
+}

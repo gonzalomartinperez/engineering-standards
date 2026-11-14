@@ -9,5 +9,8 @@ All notable changes to this project are documented here. The format follows
 
 - `classify` reusable workflow: CI profiles from changed files, branch and labels using the caller's `.github/ci-profile.json`; fail-closed (ecosystem 6.0).
 - `ci-gate` composite action: the single required check, fail-closed aggregation of `needs`.
+- `security` reusable workflow: zizmor, actionlint, gitleaks and dependency-review (licence allow-list) on PRs.
+- `docs` reusable workflow (docs-only fast path): markdownlint-cli2, lychee and the README template check.
+- `setup-node` and `setup-python-uv` composite actions: lockfile-keyed caches, `npm ci --ignore-scripts`, `uv sync --locked`.
 - Own CI with self-tests of the reusable workflow and action, and unit tests for the classify and gate logic and the workflow hardening policy.
 - Repository bootstrap: license, community files, PR and issue templates, Dependabot weekly group, lint configuration.

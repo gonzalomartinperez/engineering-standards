@@ -1,0 +1,167 @@
+# Reusable workflow: docs-only fast path (ecosystem 6.0 profile `docs`, 14.2 Docs CI).
+#
+#   docs:
+#     needs: classify
+#     if: contains(fromJSON(needs.classify.outputs.jobs), 'docs')
+#     uses: gonzalomartinperez/engineering-standards/.github/workflows/docs.yml@<sha> # vX.Y.Z
+#     permissions:
+#       contents: read
+#
+# Jobs: markdownlint-cli2 (repo config), lychee (local links by default; pass `lychee-args` without
+# `--offline` from a weekly schedule for external links), README template check (14.1).
+# Secret scanning stays in security.yml (gitleaks): the docs profile must add the `security` job too.
+name: docs
+
+on:
+  workflow_call:
+    inputs:
+      markdown-globs:
+        description: Globs for markdownlint-cli2 (newline or space separated).
+        type: string
+        default: "**/*.md"
+      lychee-args:
+        description: Arguments for lychee.
+        type: string
+        default: "--offline --no-progress --include-fragments './**/*.md'"
+      readme-check:
+        description: Check README.md against the ecosystem README template (headings, length, badges, TODO).
+        type: boolean
+        default: true
+      readme-min-lines:
+        type: number
+        default: 80
+      readme-max-lines:
+        type: number
+        default: 180
+      readme-path:
+        description: README to check (relative to the repository root).
+        type: string
+        default: README.md
+
+permissions: {}
+
+jobs:
+  markdown:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0
+        with:
+          globs: ${{ inputs.markdown-globs }}
+
+  links:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
+        with:
+          args: ${{ inputs.lychee-args }}
+          fail: true
+          jobSummary: true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  readme:
+    if: inputs.readme-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: ${{ inputs.readme-path }}
+          sparse-checkout-cone-mode: false
+      - name: README template check
+        id: readme
+        shell: python
+        env:
+          MIN_LINES: ${{ inputs.readme-min-lines }}
+          MAX_LINES: ${{ inputs.readme-max-lines }}
+          README_PATH: ${{ inputs.readme-path }}
+        run: |
+          # readme-check v1 — tests extract and run this block.
+          import os, re, sys
+
+          # Required level-2 headings in order; alternatives are separated by "|" (template 14.1).
+          REQUIRED = ["Why", "Highlights", "Architecture", "Quickstart", "Usage|Demo*|Where it runs*",
+                      "Quality", "Documentation", "Ecosystem", "Contributing and security", "Scope and limits",
+                      "License"]
+
+
+          def heading_matches(heading, spec):
+              for alt in spec.split("|"):
+                  if alt.endswith("*") and heading.lower().startswith(alt[:-1].lower()):
+                      return True
+                  if heading.lower() == alt.lower():
+                      return True
+              return False
+
+
+          def check(text, min_lines, max_lines):
+              errors = []
+              lines = text.splitlines()
+              if not min_lines <= len(lines) <= max_lines:
+                  errors.append(f"README has {len(lines)} lines; expected {min_lines}-{max_lines}")
+              in_code, headings = False, []
+              for line in lines:
+                  if line.startswith("```"):
+                      in_code = not in_code
+                  elif not in_code and line.startswith("## "):
+                      headings.append(line[3:].strip())
+              pos = 0
+              for spec in REQUIRED:
+                  found = next((i for i in range(pos, len(headings)) if heading_matches(headings[i], spec)), None)
+                  if found is None:
+                      errors.append(f"missing or out-of-order heading: ## {spec.split('|')[0].rstrip('*')}")
+                  else:
+                      pos = found + 1
+              badges = len(re.findall(r"<img[^>]*alt=[\"'](CI|Release|License)[\"']", text, re.I))
+              badges += len(re.findall(r"!\[[^\]]*\]\(https://(img\.shields\.io|github\.com/[^)]*/badge\.svg)", text))
+              if badges > 3:
+                  errors.append(f"{badges} badges; at most 3 (CI, release, license)")
+              if re.search(r"\bTODO\b", text):
+                  errors.append("README contains TODO")
+              for img in re.findall(r"<img\b[^>]*>", text, re.I):
+                  if not re.search(r"\balt=", img):
+                      errors.append(f"image without alt attribute: {img[:60]}")
+              return errors
+
+
+          def main():
+              path = os.environ.get("README_PATH", "README.md")
+              try:
+                  with open(path, encoding="utf-8") as fh:
+                      text = fh.read()
+              except FileNotFoundError:
+                  print(f"::error title=readme::{path} is missing")
+                  return 1
+              errors = check(text, int(os.environ.get("MIN_LINES", "80")), int(os.environ.get("MAX_LINES", "180")))
+              for err in errors:
+                  print(f"::error file={path},title=readme template::{err}")
+              print("README template check:", "OK" if not errors else f"{len(errors)} problem(s)")
+              return 1 if errors else 0
+
+
+          if __name__ == "__main__":
+              sys.exit(main())
