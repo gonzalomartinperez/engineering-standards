@@ -31,6 +31,10 @@ class WorkflowPolicyTests(unittest.TestCase):
                 if not m or m.group(1).startswith("./"):
                     continue
                 with self.subTest(file=rel, line=n):
+                    if rel.startswith("templates/") and m.group(1).endswith("@STANDARDS_SHA"):
+                        self.assertTrue(m.group(1).startswith("gonzalomartinperez/engineering-standards/"))
+                        self.assertIn("# STANDARDS_TAG", m.group(2))
+                        continue
                     self.assertRegex(m.group(1), SHA_USES)
                     self.assertRegex(m.group(2), r"#\s*v?\d", "version comment required after the SHA")
 
@@ -75,6 +79,21 @@ class WorkflowPolicyTests(unittest.TestCase):
                 for step in steps:
                     with self.subTest(file=rel, job=job, step=step.get("name") or step.get("id")):
                         self.assertNotIn("${{", step.get("run", ""), "pass context through env:")
+
+
+class TemplateConsistencyTests(unittest.TestCase):
+    def test_ci_template_gate_needs_every_job_and_jobs_exist_in_profile(self):
+        import json
+        doc = load_yaml("templates/workflows/ci.yml")
+        jobs = set(doc["jobs"]) - {"ci-gate"}
+        self.assertEqual(set(doc["jobs"]["ci-gate"]["needs"]), jobs)
+        profile = json.loads((ROOT / "templates/ci-profile/ci-profile.example.json").read_text())
+        names = set(profile["base"]) | {j for p in profile["profiles"].values() for j in p.get("adds", [])}
+        self.assertLessEqual(jobs - {"classify"}, names)
+
+    def test_own_ci_gate_needs_every_job(self):
+        doc = load_yaml(".github/workflows/ci.yml")
+        self.assertEqual(set(doc["jobs"]["ci-gate"]["needs"]), set(doc["jobs"]) - {"ci-gate"})
 
 
 if __name__ == "__main__":

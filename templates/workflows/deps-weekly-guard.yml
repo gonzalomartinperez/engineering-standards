@@ -1,0 +1,25 @@
+# Weekly dependency PR guard (ecosystem 5.3, OD-75). Copy to .github/workflows/deps-weekly-guard.yml.
+name: deps-weekly-guard
+
+on:
+  schedule:
+    - cron: "30 13 * * 1"   # Monday 10:30 America/Argentina/Buenos_Aires (UTC-3, no DST)
+  pull_request:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: deps-weekly-guard
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    if: github.event_name != 'pull_request' || github.actor == 'dependabot[bot]'
+    uses: gonzalomartinperez/engineering-standards/.github/workflows/deps-weekly-guard.yml@STANDARDS_SHA # STANDARDS_TAG
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      checks: read

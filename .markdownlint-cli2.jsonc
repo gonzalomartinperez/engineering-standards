@@ -9,5 +9,5 @@
     "MD024": { "siblings_only": true }
   },
   // standard/ holds byte-identical canonical copies maintained through the standards process.
-  "ignores": ["standard/**", "node_modules/**", ".venv/**", "CODE_OF_CONDUCT.md", "templates/community/CODE_OF_CONDUCT.md"]
+  "ignores": ["standard/**", "templates/readme/README.*.md", "node_modules/**", ".venv/**", "CODE_OF_CONDUCT.md", "templates/community/CODE_OF_CONDUCT.md"]
 }

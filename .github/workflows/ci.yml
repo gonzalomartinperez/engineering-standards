@@ -62,6 +62,14 @@ jobs:
         run: uvx yamllint==1.38.0 -s .
       - name: actionlint
         run: uvx --from actionlint-py==1.7.12.25 actionlint
+      - name: actionlint (workflow templates with placeholder pins substituted)
+        run: |
+          dir="$RUNNER_TEMP/templates-lint"
+          mkdir -p "$dir/.github/workflows"
+          for f in templates/workflows/*.yml; do
+            sed "s/STANDARDS_SHA/0123456789abcdef0123456789abcdef01234567/g; s/STANDARDS_TAG/v1.0.0/g" "$f" > "$dir/.github/workflows/$(basename "$f")"
+          done
+          cd "$dir" && git init -q && uvx --from actionlint-py==1.7.12.25 actionlint
       - name: shellcheck
         run: |
           shopt -s nullglob

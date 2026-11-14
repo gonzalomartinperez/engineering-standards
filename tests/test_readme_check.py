@@ -50,6 +50,15 @@ class ReadmeCheckTests(unittest.TestCase):
         self.assertEqual(M.check(text, 80, 180), [])
 
 
+class ReadmeTemplateTests(unittest.TestCase):
+    def test_both_variants_have_the_required_headings(self):
+        from helpers import ROOT
+        for variant in ("public", "private"):
+            with self.subTest(variant=variant):
+                text = (ROOT / f"templates/readme/README.{variant}.md").read_text(encoding="utf-8")
+                self.assertEqual(M.check(text, 0, 180), [])
+
+
 class ReadmeMainTests(unittest.TestCase):
     def _main(self, text):
         import contextlib

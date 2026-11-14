@@ -17,5 +17,7 @@ All notable changes to this project are documented here. The format follows
 - `standards-drift` tool (`tools/standards_drift.py`), `standards.lock` format and schema, `drift` reusable workflow, and `templates/MANIFEST.json` of byte-matched files.
 - Dependabot templates for release repos (target `develop`) and main-only repos (target `main`) with the verified group shape, enforced by the `dependabot-policy` drift check.
 - Canonical copies of the ecosystem standard, rubrics, Dependabot rule and README template under `standard/`; `ci-profile.json` schema.
+- Templates: README (public and private variants) and the shared Ecosystem table, caller workflows (`ci.yml`, `deps-weekly-guard.yml`, `vuln-daily.yml`, `drift.yml`, `scorecard.yml`) and an example `ci-profile.json`.
+- Standard rulesets (`rulesets/*.json`) and `scripts/apply-rulesets.sh` (idempotent, dry run by default, `--check` drift mode).
 - Own CI with self-tests of the reusable workflow and action, and unit tests for the classify and gate logic and the workflow hardening policy.
 - Repository bootstrap: license, community files, PR and issue templates, Dependabot weekly group, lint configuration.
