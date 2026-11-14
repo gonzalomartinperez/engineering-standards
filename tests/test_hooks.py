@@ -10,6 +10,8 @@ BASH = ROOT / "harness/hooks/guard-bash.py"
 FILES = ROOT / "harness/hooks/guard-files.py"
 # Destructive phrases are assembled at run time so local guard hooks do not flag this test source.
 DROP_DB = "DROP " + "DATABASE"
+DROP_TABLE = "DROP " + "TABLE"
+TRUNC = "TRUN" + "CATE"
 FORCE = "--" + "force"
 
 
@@ -39,6 +41,13 @@ BLOCKED = [
     "rm -rf ..", "rm -rf .git", "docker system prune -af", "docker volume rm data", "docker compose down -v",
     "docker compose down -fv", "docker-compose down --volumes", f"psql -c '{DROP_DB} app'", "echo ok && pkill -f x",
     "git clean -fdx", "git clean -f -d", f"git clean {FORCE} -x",
+    # second review: comments, newlines, globs, interpreters, wrappers
+    "echo a#b; pkill -f x", "echo $#; git reset --hard", "curl http://h/#a; rm -rf /",
+    "git commit -m x#1 && git push -f origin main", "cat file#1 .env", "echo hi\npkill -f x", "ls\n\nrm -rf /etc",
+    "rm -rf .*", "rm -rf ./.[!.]*", "rm -rf ./.g*", "rm -rf **", "rm -rf ./*", "rm -rf .gi?",
+    "python3 -c \"print(open('.env').read())\"", "node -e \"require('fs').readFileSync('.env')\"",
+    "tail -F .env", "cat -b .env", "find / -exec rm -rf {} +", "git push --mirror origin",
+    f"psql -c '{DROP_TABLE} users'", f"psql -c '{TRUNC} users'", "dropdb app", "setsid pkill -f x",
 ]
 
 ALLOWED = [
@@ -48,6 +57,8 @@ ALLOWED = [
     "rm file.txt", "rm --force file.txt", "docker compose down", "npm run lint", "echo 'environment'", "ls -la",
     "git log --oneline", "git commit -m 'update .env handling docs'", "git log --grep=.env",
     "node --env-file=.env server.js", "echo \"a; b\"", "git -C some/dir status", "git clean -n -d",
+    "git commit -m \"$(cat <<'EOF'\nfix .env handling\nEOF\n)\"", f"gh issue create --body 'about {DROP_DB}'",
+    "rm -rf dist/*", "rm -rf build/*.js", "echo '# not a comment' && npm test", "python3 -c 'print(1)'",
 ]
 
 
@@ -110,6 +121,20 @@ class GuardFilesTests(unittest.TestCase):
                      "README.md", "config/keys.json", "certs/ca.pem", "certs/chain.pem"]:
             with self.subTest(path=path):
                 self.assertEqual(self.files("Edit", path), 0)
+
+    def test_search_tools_and_private_pem(self):
+        self.assertEqual(run(FILES, {"tool_name": "Grep", "tool_input": {"pattern": "KEY", "glob": ".env*"}})[0], 2)
+        self.assertEqual(run(FILES, {"tool_name": "Glob", "tool_input": {"pattern": "**/.env"}})[0], 2)
+        self.assertEqual(run(FILES, {"tool_name": "Grep", "tool_input": {"pattern": "process.env.API", "path": "src"}})[0], 0)
+        with tempfile.TemporaryDirectory() as tmp:
+            key = f"{tmp}/server.pem"
+            with open(key, "w") as fh:
+                fh.write("-----BEGIN " + "PRIVATE KEY-----\nabc\n")
+            cert = f"{tmp}/ca.pem"
+            with open(cert, "w") as fh:
+                fh.write("-----BEGIN CERTIFICATE-----\nabc\n")
+            self.assertEqual(self.files("Read", key), 2)
+            self.assertEqual(self.files("Read", cert), 0)
 
     def test_codex_apply_patch(self):
         for target, expected in ((".env", 2), ("uv.lock", 2), ("src/app.py", 0)):

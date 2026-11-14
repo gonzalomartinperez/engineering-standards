@@ -18,3 +18,5 @@ Guard policy notes: `rm -rf` is allowed on relative paths inside the working tre
 `node_modules`, `dist`, `.next`) and on temp directories, and blocked on absolute paths, `~`, `..`,
 `.git` and bare `.`/`*`. The hooks fail closed on internal errors. They are best-effort guards that
 unwrap common wrappers, not a sandbox; the sandbox and approval policy remain the outer layer.
+Skill staleness: `check_skills.py` warns on PRs; a scheduled `--strict-staleness` run belongs to the
+M2 eval tooling and is not shipped in v1.0.0.

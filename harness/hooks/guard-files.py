@@ -38,16 +38,28 @@ def paths_of(event: dict) -> list[str]:
     tool_input = event.get("tool_input") or {}
     if not isinstance(tool_input, dict):
         return []
-    found = [str(tool_input[k]) for k in ("file_path", "path", "notebook_path") if tool_input.get(k)]
+    keys = ["file_path", "path", "notebook_path", "glob"] + (["pattern"] if event.get("tool_name") == "Glob" else [])
+    found = [str(tool_input[k]) for k in keys if tool_input.get(k)]
     if event.get("tool_name") == "apply_patch" or "*** Begin Patch" in patch_text(tool_input):
         found += PATCH_PATH.findall(patch_text(tool_input))
     return found
 
 
+def private_pem(path: str) -> bool:
+    if not path.endswith(".pem"):
+        return False
+    try:
+        with open(path, "rb") as fh:
+            return b"PRIVATE KEY-----" in fh.read(4096)
+    except OSError:
+        return False
+
+
 def reason_for(tool: str, path: str) -> str | None:
     posix = pathlib.PurePath(path).as_posix()
     name = posix.rsplit("/", 1)[-1]
-    if (ENV.search(posix) and not SAFE_ENV_SUFFIX.search(name)) or PRIVATE_KEY.search(posix):
+    env_glob = re.search(r"(^|/)\.e[^/]*[*?\[]", posix) or re.search(r"(^|/)[*?]+env", posix)
+    if (ENV.search(posix) and not SAFE_ENV_SUFFIX.search(name)) or env_glob or PRIVATE_KEY.search(posix) or private_pem(path):
         return f"{posix} may hold secrets; it never enters the context (use .env.example)"
     if tool in WRITE_TOOLS and name in LOCKFILES:
         return f"{posix} changes only through the package manager (npm install, uv lock), never by hand"

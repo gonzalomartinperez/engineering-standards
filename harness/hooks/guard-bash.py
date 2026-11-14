@@ -13,8 +13,11 @@ xargs, eval, `bash|sh|zsh -c`) and recurses into `$(...)` and backticks. Blocks:
     deleting main or develop on a remote; `git update-ref -d refs/heads/main|develop`
   - reading or copying `.env` files (`*.example`, `*.sample`, `*.template`, `*.dist` allowed;
     `--env-file` loading is allowed because the content does not enter the context)
-  - `git reset --hard`, `git clean -f` with `-d` or `-x`, `rm` recursive+force outside a temp
-    directory or the working tree, docker prune / `volume rm` / `compose down -v`, destructive SQL
+  - `git reset --hard`, `git clean -f` with `-d` or `-x`, `git push --mirror`, `rm` recursive+force
+    outside a temp directory or the working tree (globs that can reach dotfiles included),
+    `find -exec` of any blocked command, docker prune / `volume rm` / `compose down -v`,
+    destructive SQL (DROP DATABASE/SCHEMA/TABLE, TRUNCATE, dropdb)
+Heredoc bodies are treated as data and not analysed (commit and PR messages use them).
 Fails closed: an internal error blocks the command. Hard rules live here, not in prose (15.1).
 """
 from __future__ import annotations
@@ -29,11 +32,15 @@ import sys
 
 PROTECTED = {"main", "develop"}
 SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
-OPERATORS = {";", "&&", "||", "|", "&", "|&", "(", ")", "{", "}", "!", ";;"}
+OPERATORS = {";", "&&", "||", "|", "&", "|&", "(", ")", "{", "}", "!", ";;", "\n"}
 KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "case", "esac", "in"}
 SAFE_ENV_SUFFIX = re.compile(r"\.(example|sample|template|dist)(\.|$)")
 ENV_TOKEN = re.compile(r"(^|[/=<>])\.env([.*?][^/]*)?$")
-SQL = re.compile(r"\b(DROP\s+(DATABASE|SCHEMA)|TRUNCATE\s+TABLE)\b", re.I)
+SQL = re.compile(r"\b(DROP\s+(DATABASE|SCHEMA|TABLE)|TRUNCATE)\b", re.I)
+INTERPRETERS = {"python", "python3", "node", "ruby", "perl", "php", "deno", "bun"}
+ENV_SUBSTRING = re.compile(r"""(^|[\s'"(,=/])\.env(?!\.(example|sample|template|dist)\b)(\.[\w-]+)?(['")\s,]|$)""")
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2\s*(?=\n|$)", re.S)
+GLOB_CHARS = set("*?[")
 MESSAGE_FLAGS = {"-m", "--message", "--grep", "-F", "--file", "--title", "--body", "-t", "-b"}
 TEMP_PREFIXES = ("/tmp/", "/var/tmp/", "$TMPDIR/", "${TMPDIR}/", "$RUNNER_TEMP/", "${RUNNER_TEMP}/")
 
@@ -43,13 +50,14 @@ def strip_prefix(text: str, prefix: str) -> str:
 
 
 def tokenize(cmd: str) -> list[str]:
-    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|(){}<>!")
+    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|(){}<>!\n")
+    lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
-    lexer.commenters = "#"
+    lexer.commenters = ""  # bash treats only a word-initial # as a comment; over-blocking is safer
     try:
         return list(lexer)
     except ValueError:  # unbalanced quotes: fall back to a rough split
-        return re.findall(r"[;&|(){}<>!]+|[^\s;&|(){}<>!]+", cmd)
+        return re.findall(r"\n|[;&|(){}<>!]+|[^\s;&|(){}<>!]+", cmd)
 
 
 def substitutions(cmd: str) -> list[str]:
@@ -65,7 +73,7 @@ def segments(tokens: list[str]) -> list[list[str]]:
             if cur:
                 out.append(cur)
             cur = []
-        elif tok and set(tok) <= set(";&|(){}!"):  # operator runs such as ";;" or "&&("
+        elif tok and set(tok) <= set(";&|(){}!\n"):  # operator runs such as ";;" or "&&("
             if cur:
                 out.append(cur)
             cur = []
@@ -105,7 +113,7 @@ def unwrap(words: list[str]) -> list[str]:
             words = words[1:]
             while words and words[0].startswith("-"):
                 words = words[2:] if words[0] in ("-I", "-n", "-P", "-L", "-d", "-E", "-s") else words[1:]
-        elif head in ("nohup", "command", "exec", "time", "builtin", "stdbuf", "chrt", "ionice"):
+        elif head in ("nohup", "command", "exec", "time", "builtin", "stdbuf", "chrt", "ionice", "setsid", "flock"):
             words = words[1:]
             while words and words[0].startswith("-"):
                 words = words[1:]
@@ -146,6 +154,8 @@ def check_git(args: list[str]) -> str | None:
     sub, rest = args[i], args[i + 1:]
     flags = short_flags(rest)
     if sub == "push":
+        if "--mirror" in flags:
+            return "git push --mirror is blocked (it can delete remote branches)"
         force = bool(flags & {"-f", "--force", "--force-with-lease", "--force-if-includes"})
         positional = [a for a in rest if not a.startswith("-")]
         refspecs = positional[1:]
@@ -163,8 +173,8 @@ def check_git(args: list[str]) -> str | None:
             targets.add(strip_prefix(dst, "refs/heads/"))
         if flags & {"-d", "--delete"} and targets & PROTECTED:
             return "deleting a protected branch on a remote is blocked"
-        if force and flags & {"--all", "--mirror"}:
-            return "force push with --all or --mirror is blocked"
+        if force and "--all" in flags:
+            return "force push with --all is blocked"
         if force and (targets & PROTECTED or (not refspecs and current_branch(git_dir) in PROTECTED)):
             return "force push to main or develop is blocked"
     elif sub == "reset" and "--hard" in flags:
@@ -177,6 +187,11 @@ def check_git(args: list[str]) -> str | None:
 
 
 def risky_rm_path(path: str) -> bool:
+    if set(path) & GLOB_CHARS:
+        # Allow only globs that cannot reach dotfiles or the repository root: "dir/*", "build/*.js".
+        head, _, last = path.rpartition("/")
+        return (not head or head.startswith((".", "/", "~", "$")) or set(head) & GLOB_CHARS
+                or last.startswith((".", "[", "?")) or ".." in path.split("/"))
     if path.startswith(TEMP_PREFIXES):
         norm = posixpath.normpath(path)
         return ".." in path.split("/") or norm in ("/tmp", "/var/tmp")
@@ -197,6 +212,19 @@ def reason_for_words(words: list[str], depth: int) -> str | None:
         return None
     if name == "eval":
         return reason_for(" ".join(args), depth + 1)
+    if name == "find":
+        for j, a in enumerate(args):
+            if a in ("-exec", "-execdir", "-ok", "-okdir"):
+                inner = [w for w in args[j + 1:] if w not in ("{}", "+")]
+                why = reason_for_words(inner, depth + 1)
+                if why:
+                    return why
+        if "-delete" in args and any(p in ("/", "~", "..", ".git") for p in args):
+            return "find -delete on a protected path is blocked"
+    if name == "dropdb":
+        return "dropdb is blocked"
+    if name in INTERPRETERS and any(ENV_SUBSTRING.search(a) for a in args if not a.startswith("--env-file")):
+        return "reading .env files is blocked (use .env.example; secrets never enter the context)"
     if name == "pkill" and short_flags(args) & {"-f", "--full"}:
         return "pkill -f is blocked: kill only by verified PID (OD-74)"
     if name == "git":
@@ -220,13 +248,15 @@ def reason_for_words(words: list[str], depth: int) -> str | None:
     return None
 
 
-def env_reference(tokens: list[str]) -> bool:
+def env_reference(words: list[str]) -> bool:
+    """True when a word of one command segment names a .env file (message values of git/gh skipped)."""
     skip = False
-    for tok in tokens:
+    message_cmd = bool(words) and words[0].rsplit("/", 1)[-1] in ("git", "gh")
+    for tok in words:
         if skip:
             skip = False
             continue
-        if tok in MESSAGE_FLAGS:
+        if message_cmd and tok in MESSAGE_FLAGS:
             skip = True
             continue
         if tok.startswith("--env-file") or tok.startswith(("--message=", "--grep=", "--title=", "--body=")):
@@ -240,12 +270,13 @@ def env_reference(tokens: list[str]) -> bool:
 def reason_for(cmd: str, depth: int = 0) -> str | None:
     if depth > 4:
         return None
+    cmd = HEREDOC.sub("<<HEREDOC", cmd)  # heredoc bodies are data (commit messages, PR bodies)
     tokens = tokenize(cmd)
-    if env_reference(tokens):
-        return "reading or copying .env files is blocked (use .env.example; secrets never enter the context)"
     for words in segments(tokens):
-        if SQL.search(" ".join(w for w in words if w not in MESSAGE_FLAGS)) and words[0].rsplit("/", 1)[-1] != "git":
-            return "destructive SQL (DROP DATABASE/SCHEMA, TRUNCATE TABLE) is blocked"
+        if env_reference(unwrap(words)):
+            return "reading or copying .env files is blocked (use .env.example; secrets never enter the context)"
+        if SQL.search(" ".join(words)) and unwrap(words) and unwrap(words)[0].rsplit("/", 1)[-1] not in ("git", "gh"):
+            return "destructive SQL (DROP DATABASE/SCHEMA/TABLE, TRUNCATE) is blocked"
         why = reason_for_words(words, depth)
         if why:
             return why
