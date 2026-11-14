@@ -6,7 +6,7 @@
   "profiles": {
     "docs": {
       "paths": ["**/*.md", "docs/**", "LICENSE"],
-      "adds": [],
+      "adds": ["security"],
       "budgetP50Minutes": 2,
       "budgetP95Minutes": 4
     },

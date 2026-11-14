@@ -50,5 +50,42 @@ class ReadmeCheckTests(unittest.TestCase):
         self.assertEqual(M.check(text, 80, 180), [])
 
 
+class ReadmeMainTests(unittest.TestCase):
+    def _main(self, text):
+        import contextlib
+        import io
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "README.md")
+            if text is not None:
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            env = {"README_PATH": path, "MIN_LINES": "80", "MAX_LINES": "180"}
+            old = {k: os.environ.get(k) for k in env}
+            os.environ.update(env)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    code = M.main()
+            finally:
+                for k, v in old.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+            return code, out.getvalue()
+
+    def test_main_passes_valid_readme(self):
+        self.assertEqual(self._main(readme())[0], 0)
+
+    def test_main_fails_with_annotations(self):
+        code, out = self._main(readme(filler=1))
+        self.assertEqual(code, 1)
+        self.assertIn("::error file=", out)
+
+    def test_main_missing_readme(self):
+        self.assertEqual(self._main(None)[0], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

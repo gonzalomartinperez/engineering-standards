@@ -9,7 +9,7 @@
 #
 # Jobs: markdownlint-cli2 (repo config), lychee (local links by default; pass `lychee-args` without
 # `--offline` from a weekly schedule for external links), README template check (14.1).
-# Secret scanning stays in security.yml (gitleaks), which the docs profile also runs.
+# Secret scanning stays in security.yml (gitleaks): the docs profile must add the `security` job too.
 name: docs
 
 on:
@@ -33,6 +33,10 @@ on:
       readme-max-lines:
         type: number
         default: 180
+      readme-path:
+        description: README to check (relative to the repository root).
+        type: string
+        default: README.md
 
 permissions: {}
 
@@ -86,7 +90,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          sparse-checkout: README.md
+          sparse-checkout: ${{ inputs.readme-path }}
           sparse-checkout-cone-mode: false
       - name: README template check
         id: readme
@@ -94,6 +98,7 @@ jobs:
         env:
           MIN_LINES: ${{ inputs.readme-min-lines }}
           MAX_LINES: ${{ inputs.readme-max-lines }}
+          README_PATH: ${{ inputs.readme-path }}
         run: |
           # readme-check v1 — tests extract and run this block.
           import os, re, sys
@@ -144,15 +149,16 @@ jobs:
 
 
           def main():
+              path = os.environ.get("README_PATH", "README.md")
               try:
-                  with open("README.md", encoding="utf-8") as fh:
+                  with open(path, encoding="utf-8") as fh:
                       text = fh.read()
               except FileNotFoundError:
-                  print("::error title=readme::README.md is missing")
+                  print(f"::error title=readme::{path} is missing")
                   return 1
               errors = check(text, int(os.environ.get("MIN_LINES", "80")), int(os.environ.get("MAX_LINES", "180")))
               for err in errors:
-                  print(f"::error file=README.md,title=readme template::{err}")
+                  print(f"::error file={path},title=readme template::{err}")
               print("README template check:", "OK" if not errors else f"{len(errors)} problem(s)")
               return 1 if errors else 0
 

@@ -2,20 +2,20 @@
 #
 #   - uses: gonzalomartinperez/engineering-standards/actions/setup-python-uv@<sha> # vX.Y.Z
 #     with:
-#       python-version-file: .python-version
+#       working-directory: .           # holds pyproject.toml, uv.lock and .python-version
 #
 # `uv sync --locked` fails when uv.lock is out of date; `exclude-newer` stays in pyproject (7 days).
 name: setup-python-uv
 description: Set up uv and Python, restore the uv cache keyed on uv.lock and run uv sync --locked.
 inputs:
   python-version:
-    description: Python version (ignored when python-version-file exists and this is empty).
+    description: Python version; empty means uv reads .python-version in the working directory.
     required: false
     default: ""
-  python-version-file:
-    description: File holding the Python version.
+  cache:
+    description: Restore and save the uv cache (set false in release or publish jobs to avoid cache poisoning).
     required: false
-    default: .python-version
+    default: "true"
   uv-version:
     description: uv version to install (pin for reproducibility).
     required: false
@@ -48,8 +48,8 @@ runs:
       with:
         version: ${{ inputs.uv-version }}
         python-version: ${{ inputs.python-version }}
-        enable-cache: true
-        cache-dependency-glob: ${{ inputs.working-directory }}/uv.lock
+        enable-cache: ${{ inputs.cache }}
+        cache-dependency-glob: uv.lock   # resolved relative to working-directory by setup-uv
         working-directory: ${{ inputs.working-directory }}
     - name: Install Python
       id: python
@@ -57,11 +57,10 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       env:
         PY_VERSION: ${{ inputs.python-version }}
-        PY_FILE: ${{ inputs.python-version-file }}
       run: |
-        # An explicit version is exported as UV_PYTHON by setup-uv; otherwise uv reads the version file.
-        if [ -z "$PY_VERSION" ] && [ ! -f "$PY_FILE" ]; then
-          echo "::error title=setup-python-uv::set python-version or provide $PY_FILE"
+        # An explicit version is exported as UV_PYTHON by setup-uv; otherwise uv reads .python-version.
+        if [ -z "$PY_VERSION" ] && [ ! -f .python-version ]; then
+          echo "::error title=setup-python-uv::set python-version or provide .python-version"
           exit 1
         fi
         uv python install

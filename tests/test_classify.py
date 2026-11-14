@@ -60,6 +60,12 @@ class ClassifyTests(unittest.TestCase):
         self.assertFalse(r["all"])
         self.assertEqual(r["jobs"], ["secrets", "markdown", "links"])
 
+    def test_own_docs_profile_runs_the_secret_scan(self):
+        config = json.loads((ROOT / ".github/ci-profile.json").read_text())
+        r = M.classify(config, "pull_request", pr_event(), ".github/ci-profile.json", lambda: ["README.md"])
+        self.assertTrue(r["docs-only"])
+        self.assertIn("security", r["jobs"])
+
     def test_code_change(self):
         r = run(["src/app.ts", "README.md"])
         self.assertEqual(r["profile"], "code")

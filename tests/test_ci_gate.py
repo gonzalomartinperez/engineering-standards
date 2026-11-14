@@ -39,8 +39,10 @@ class CiGateTests(unittest.TestCase):
     def test_expected_job_skipped_fails(self):
         self.assertFalse(M.evaluate(needs(classify="success", unit="skipped"), "classify", '["unit"]')[0])
 
-    def test_expected_job_absent_from_needs_is_ignored(self):
-        self.assertTrue(M.evaluate(needs(classify="success"), "classify", '["tsc"]')[0])
+    def test_expected_job_absent_from_needs_is_ignored_with_warning(self):
+        ok, lines = M.evaluate(needs(classify="success"), "classify", '["tsc"]')
+        self.assertTrue(ok)
+        self.assertTrue(any("tsc" in line and "warning" in line for line in lines))
 
     def test_expected_not_array_fails(self):
         self.assertFalse(M.evaluate(needs(classify="success"), "classify", '{"a": 1}')[0])

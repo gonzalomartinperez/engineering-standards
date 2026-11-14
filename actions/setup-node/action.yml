@@ -21,6 +21,10 @@ inputs:
     description: Directory that holds package.json and package-lock.json.
     required: false
     default: "."
+  cache:
+    description: Use the npm cache (set false in release or publish jobs to avoid cache poisoning).
+    required: false
+    default: "true"
   install:
     description: Run npm ci after setup.
     required: false
@@ -61,7 +65,8 @@ runs:
       with:
         node-version: ${{ inputs.node-version }}
         node-version-file: ${{ steps.version.outputs.file }}
-        cache: npm
+        cache: ${{ inputs.cache == 'true' && 'npm' || '' }}
+        package-manager-cache: ${{ inputs.cache == 'true' }}
         cache-dependency-path: ${{ inputs.working-directory }}/package-lock.json
     - name: npm ci
       if: inputs.install == 'true'

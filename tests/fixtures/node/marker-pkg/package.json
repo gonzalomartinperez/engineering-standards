@@ -1,0 +1,7 @@
+{
+  "name": "marker-pkg",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node -e \"require('fs').writeFileSync(require('path').join(process.env.INIT_CWD, 'postinstall-ran'), 'x')\""
+  }
+}

@@ -132,8 +132,10 @@ jobs:
         uses: ./actions/setup-node
         with:
           working-directory: tests/fixtures/node
-      - name: Assert node_modules installed without scripts
-        run: test -f tests/fixtures/node/node_modules/semver/package.json
+      - name: Assert dependencies installed and install scripts did not run
+        run: |
+          test -f tests/fixtures/node/node_modules/semver/package.json
+          test ! -e tests/fixtures/node/postinstall-ran
       - name: setup-python-uv on the fixture
         uses: ./actions/setup-python-uv
         with:
