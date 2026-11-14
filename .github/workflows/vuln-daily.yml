@@ -12,6 +12,7 @@
 #         contents: read
 #         issues: write
 #       with:
+#         runner: ${{ vars.CI_RUNNER || 'ubuntu-latest' }} # optional self-hosted label
 #         images: ""                  # vps-ops: newline-separated image@sha256 refs from releases/production.lock
 #
 # What it does: osv-scanner over every lockfile (full, recursive), a compromise watch of workflow
@@ -25,6 +26,10 @@ name: vuln-daily
 on:
   workflow_call:
     inputs:
+      runner:
+        description: Runner label for every job (default GitHub-hosted). Adopters pass a self-hosted label as a fallback when hosted minutes run out.
+        type: string
+        default: ubuntu-latest
       images:
         description: Newline-separated image references (by digest) to scan with Grype (public or anonymously pullable images).
         type: string
@@ -48,7 +53,7 @@ permissions: {}
 
 jobs:
   scan:
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -110,7 +115,7 @@ jobs:
 
   record:
     needs: scan
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     concurrency:
       group: vuln-daily-${{ github.repository }}

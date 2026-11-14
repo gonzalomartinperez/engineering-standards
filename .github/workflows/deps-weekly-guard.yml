@@ -11,6 +11,8 @@
 #     guard:
 #       if: github.event_name != 'pull_request' || github.actor == 'dependabot[bot]'
 #       uses: gonzalomartinperez/engineering-standards/.github/workflows/deps-weekly-guard.yml@<sha> # vX.Y.Z
+#       with:
+#         runner: ${{ vars.CI_RUNNER || 'ubuntu-latest' }} # optional self-hosted label
 #       permissions:
 #         contents: read
 #         pull-requests: write
@@ -34,6 +36,10 @@ name: deps-weekly-guard
 on:
   workflow_call:
     inputs:
+      runner:
+        description: Runner label for every job (default GitHub-hosted). Adopters pass a self-hosted label as a fallback when hosted minutes run out.
+        type: string
+        default: ubuntu-latest
       gate-check-name:
         description: Name of the required check on the dependency PR.
         type: string
@@ -60,7 +66,7 @@ permissions: {}
 jobs:
   guard:
     name: deps-weekly-guard
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     concurrency:
       group: deps-weekly-guard-${{ github.repository }}

@@ -7,6 +7,7 @@
 #       contents: read
 #       pull-requests: read     # dependency-review summary and gitleaks PR scan
 #     with:
+#       runner: ${{ vars.CI_RUNNER || 'ubuntu-latest' }} # optional self-hosted label
 #       dependency-review: true # public repos (free); private repos use the daily osv job instead
 #
 # Jobs: zizmor (workflow security), actionlint, gitleaks (secrets), dependency-review (PRs only).
@@ -18,6 +19,10 @@ name: security
 on:
   workflow_call:
     inputs:
+      runner:
+        description: Runner label for every job (default GitHub-hosted). Adopters pass a self-hosted label as a fallback when hosted minutes run out.
+        type: string
+        default: ubuntu-latest
       zizmor:
         description: Run zizmor on .github/workflows and composite actions.
         type: boolean
@@ -60,7 +65,7 @@ permissions: {}
 jobs:
   zizmor:
     if: inputs.zizmor
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -80,7 +85,7 @@ jobs:
 
   actionlint:
     if: inputs.actionlint
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -99,7 +104,7 @@ jobs:
 
   gitleaks:
     if: inputs.gitleaks && github.event_name != 'merge_group'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -121,7 +126,7 @@ jobs:
 
   dependency-review:
     if: inputs.dependency-review && github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 10
     permissions:
       contents: read

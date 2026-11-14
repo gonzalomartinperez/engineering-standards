@@ -2,6 +2,8 @@
 #
 #   drift:
 #     uses: gonzalomartinperez/engineering-standards/.github/workflows/drift.yml@<sha> # vX.Y.Z
+#     with:
+#       runner: ${{ vars.CI_RUNNER || 'ubuntu-latest' }} # optional self-hosted label
 #     permissions:
 #       contents: read
 #
@@ -13,6 +15,10 @@ name: drift
 on:
   workflow_call:
     inputs:
+      runner:
+        description: Runner label for every job (default GitHub-hosted). Adopters pass a self-hosted label as a fallback when hosted minutes run out.
+        type: string
+        default: ubuntu-latest
       lock-path:
         description: Path of the lock file in the caller repository.
         type: string
@@ -23,7 +29,7 @@ permissions: {}
 jobs:
   drift:
     name: standards-drift
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 5
     permissions:
       contents: read
