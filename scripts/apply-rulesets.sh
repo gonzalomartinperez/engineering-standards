@@ -10,6 +10,7 @@
 # Options: --merge-methods merge|squash|rebase (comma list; default merge; pequeverso-marketing: squash)
 #          --rulesets-dir DIR (default: the rulesets/ next to this script)
 # Only the keys present in rulesets/*.json are compared; server-side extras do not count as drift.
+# When a managed key differs, --apply PUTs the whole ruleset, which drops hand-added extras.
 # Exit codes: 0 ok (or dry run), 1 drift in --check mode or a failed write, 2 usage error,
 #             3 rulesets unavailable (HTTP 403: private repository of a personal account without a
 #             paid plan; fall back to the five-layer main-only enforcement, ecosystem 3.1).
@@ -20,7 +21,15 @@ repo="" flow="" mode="dry-run" merge_methods="merge"
 rules_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../rulesets" && pwd)"
 
 usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
-need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "$1 needs a value" >&2; usage 2; }; }
+need_value() {
+  if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+    echo "$1 needs a value" >&2
+    usage 2
+  fi
+}
+fail() {  # keep the most severe exit code: 3 (forbidden) wins over 1
+  if is_forbidden; then rc=3; elif [ "$rc" -ne 3 ]; then rc=1; fi
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -85,7 +94,7 @@ for f in "${files[@]}"; do
   id=$(jq -r --arg n "$name" '.[] | select(.name == $n and .source_type == "Repository") | .id' <<<"$existing" | head -n 1)
   if [ -n "$id" ]; then
     if ! current_raw=$(gh api "repos/$repo/rulesets/$id" 2>"$err"); then
-      cat "$err" >&2; rc=1; continue
+      cat "$err" >&2; fail; continue
     fi
     current=$(project "$desired" <<<"$current_raw")
     if [ "$current" = "$want" ]; then
@@ -98,7 +107,7 @@ for f in "${files[@]}"; do
         echo "updated  $name (id $id)"
       else
         echo "FAILED   $name (id $id): $(cat "$err")" >&2
-        if is_forbidden; then rc=3; else rc=1; fi
+        fail
       fi
     else
       echo "differs  $name (id $id)"
@@ -111,7 +120,7 @@ for f in "${files[@]}"; do
         echo "created  $name (id $new_id)"
       else
         echo "FAILED   $name: $(cat "$err")" >&2
-        if is_forbidden; then rc=3; else rc=1; fi
+        fail
       fi
     else
       echo "missing  $name (would be created)"

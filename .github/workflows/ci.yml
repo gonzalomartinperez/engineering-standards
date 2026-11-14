@@ -30,7 +30,7 @@ jobs:
     permissions:
       contents: read
     with:
-      lychee-args: "--offline --no-progress --include-fragments --exclude-path standard './**/*.md'"
+      lychee-args: "--offline --no-progress --include-fragments --exclude-path standard --exclude-path templates/readme './**/*.md'"
       readme-check: false
 
   security:
