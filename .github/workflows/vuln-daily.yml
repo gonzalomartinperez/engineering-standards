@@ -113,7 +113,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
-      group: tracking-issue-${{ github.repository }}
+      group: vuln-daily-${{ github.repository }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -144,6 +144,7 @@ jobs:
           import datetime, glob, json, os, re, sys, urllib.error, urllib.parse, urllib.request
 
           SECTION = "vuln-daily"
+          MARKER = "<!-- tracking-issue -->"
           ART = datetime.timezone(datetime.timedelta(hours=-3))  # America/Argentina/Buenos_Aires, no DST
           # Known-compromised or banned action refs (ecosystem 6.4); extend through a standards release.
           COMPROMISED = [
@@ -271,7 +272,8 @@ jobs:
               title, label = os.environ["TRACKER_TITLE"], os.environ["TRACKER_LABEL"]
               candidates = [i for i in call("GET", f"/issues?state=open&labels={urllib.parse.quote(label)}&per_page=100") or []
                             if "pull_request" not in i]
-              tracker = next((i for i in candidates if i.get("title") == title), candidates[0] if candidates else None)
+              tracker = next((i for i in candidates if i.get("title") == title), None) or next(
+                  (i for i in candidates if MARKER in (i.get("body") or "")), None)  # renamed tracker keeps its marker
               if tracker is None:
                   try:
                       call("POST", "/labels", {"name": label, "color": "b60205", "description": "Dependency and vulnerability tracking"})
@@ -279,10 +281,10 @@ jobs:
                       if exc.code != 422:
                           raise
                   tracker = call("POST", "/issues", {"title": title, "labels": [label], "body": (
-                      "Single tracking issue updated silently by the scheduled dependency and vulnerability jobs "
+                      MARKER + "\nSingle tracking issue updated silently by the scheduled dependency and vulnerability jobs "
                       "(ecosystem 5.5, OD-75). Edits notify nobody; only the Monday summary comment notifies.")})
               start, end = f"<!-- {SECTION}:start -->", f"<!-- {SECTION}:end -->"
-              body = tracker.get("body") or ""
+              body = (call("GET", f"/issues/{tracker['number']}") or tracker).get("body") or ""  # fresh copy
               block = f"{start}\n{content}\n{end}"
               i, j = body.find(start), body.find(end)
               body = body[:i] + block + body[j + len(end):] if i != -1 and j > i else body.rstrip() + "\n\n" + block + "\n"

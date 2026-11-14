@@ -119,9 +119,12 @@ class TrackerTests(unittest.TestCase):
         self.assertTrue(body.endswith("<!-- s:end -->\n"))
         self.assertIn("text", body)
 
-    def test_ensure_tracker_reuses_renamed_issue(self):
-        api = FakeApi([], issues=[{"number": 6, "title": "renamed by owner", "body": ""}])
+    def test_ensure_tracker_reuses_renamed_issue_with_marker_only(self):
+        api = FakeApi([], issues=[{"number": 5, "title": "CVE report from a human", "body": "details"},
+                                  {"number": 6, "title": "renamed by owner", "body": "<!-- tracking-issue -->\nx"}])
         self.assertEqual(M.ensure_tracker(api, "Dependency and vulnerability tracker", "vuln")["number"], 6)
+        api = FakeApi([], issues=[{"number": 5, "title": "CVE report from a human", "body": "details"}])
+        self.assertEqual(M.ensure_tracker(api, "Dependency and vulnerability tracker", "vuln")["number"], 99)
 
     def test_replace_section_appends_then_replaces(self):
         body = M.replace_section("intro", "deps-weekly-guard", "one")

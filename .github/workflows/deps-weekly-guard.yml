@@ -63,7 +63,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     concurrency:
-      group: tracking-issue-${{ github.repository }}
+      group: deps-weekly-guard-${{ github.repository }}
       cancel-in-progress: false
     permissions:
       contents: read
@@ -92,6 +92,7 @@ jobs:
 
           DEPENDABOT = "dependabot[bot]"
           SECTION = "deps-weekly-guard"
+          MARKER = "<!-- tracking-issue -->"
 
 
           class Api:
@@ -131,9 +132,10 @@ jobs:
               for issue in issues:
                   if issue.get("title") == title:
                       return issue
-              if issues:  # renamed by the owner: keep using it rather than opening a second issue
-                  return issues[0]
-              intro = ("Single tracking issue updated silently by the scheduled dependency and vulnerability jobs "
+              for issue in issues:  # renamed by the owner: reuse it only if it carries the tracker marker
+                  if MARKER in (issue.get("body") or ""):
+                      return issue
+              intro = (MARKER + "\nSingle tracking issue updated silently by the scheduled dependency and vulnerability jobs "
                        "(ecosystem 5.5, OD-75). Edits notify nobody; only the Monday summary comment notifies.")
               try:
                   api.call("POST", "/labels", {"name": label, "color": "b60205",
@@ -210,8 +212,9 @@ jobs:
                   tracker = ensure_tracker(api, os.environ["TRACKER_TITLE"], os.environ["TRACKER_LABEL"])
                   content = "\n".join([f"### Weekly dependency PR (updated {now:%Y-%m-%d %H:%M} UTC)", "",
                                        *[f"- {n}" for n in notes], *[f"- Action: {a}" for a in actions]])
+                  fresh = api.call("GET", f"/issues/{tracker['number']}") or tracker  # narrow the race with vuln-daily
                   api.call("PATCH", f"/issues/{tracker['number']}",
-                           {"body": replace_section(tracker.get("body"), SECTION, content)})
+                           {"body": replace_section(fresh.get("body"), SECTION, content)})
               for line in notes + actions:
                   print(line)
               summary = os.environ.get("GITHUB_STEP_SUMMARY")
