@@ -21,7 +21,7 @@ class RulesetTests(unittest.TestCase):
                 rules = {r["type"]: r.get("parameters", {}) for r in rs["rules"]}
                 self.assertLessEqual({"deletion", "non_fast_forward", "pull_request", "required_status_checks"}, set(rules))
                 checks = rules["required_status_checks"]
-                self.assertEqual([c["context"] for c in checks["required_status_checks"]], ["ci-gate"])
+                self.assertEqual(checks["required_status_checks"], [{"context": "ci-gate", "integration_id": 15368}])
                 self.assertTrue(checks["strict_required_status_checks_policy"])
                 self.assertEqual(rules["pull_request"]["allowed_merge_methods"], ["merge"])
 
@@ -29,7 +29,7 @@ class RulesetTests(unittest.TestCase):
         rs = self.load("tags.json")
         self.assertEqual(rs["target"], "tag")
         self.assertEqual(rs["conditions"]["ref_name"]["include"], ["refs/tags/v*"])
-        self.assertEqual({r["type"] for r in rs["rules"]}, {"deletion", "non_fast_forward", "update"})
+        self.assertEqual({r["type"] for r in rs["rules"]}, {"deletion", "update"})
 
     def test_script_rejects_bad_arguments_without_network(self):
         script = ROOT / "scripts/apply-rulesets.sh"

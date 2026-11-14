@@ -1,12 +1,12 @@
-# Standards drift check (ecosystem 16). Copy to .github/workflows/drift.yml. Also call drift.yml from
-# ci.yml for PRs that touch standards.lock or a byte-matched file if you want PR-time feedback.
+# Standards drift check (ecosystem 16). Copy to .github/workflows/drift.yml. Runs on every PR (cheap,
+# no build) so an edit to a byte-matched file is caught before merge; add `drift` to ci-gate.needs
+# through a `uses:` job in ci.yml instead if it must block merges.
 name: drift
 
 on:
   schedule:
     - cron: "0 12 * * 1"   # Monday 09:00 ART, next to the weekly dependency PR
   pull_request:
-    paths: [standards.lock]
   workflow_dispatch:
 
 permissions: {}

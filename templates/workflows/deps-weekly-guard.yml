@@ -10,10 +10,6 @@ on:
 
 permissions: {}
 
-concurrency:
-  group: deps-weekly-guard
-  cancel-in-progress: false
-
 jobs:
   guard:
     if: github.event_name != 'pull_request' || github.actor == 'dependabot[bot]'

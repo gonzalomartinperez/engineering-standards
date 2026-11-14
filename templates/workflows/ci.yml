@@ -15,7 +15,9 @@ on:
 permissions: {}
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
+  # PRs: one run per ref, newer pushes cancel older runs. Other events: one group per commit, so a
+  # queued push run is never replaced by a later one.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:

@@ -9,36 +9,42 @@
 # Flows: release (develop + main + v* tags), main-only (main + v* tags).
 # Options: --merge-methods merge|squash|rebase (comma list; default merge; pequeverso-marketing: squash)
 #          --rulesets-dir DIR (default: the rulesets/ next to this script)
-# Requires gh authenticated as the repository owner. Rulesets on private repositories of a personal
-# account need a paid plan; the script reports HTTP 403 and exits 3 so the caller can fall back to the
-# five-layer main-only enforcement (ecosystem 3.1).
+# Only the keys present in rulesets/*.json are compared; server-side extras do not count as drift.
+# Exit codes: 0 ok (or dry run), 1 drift in --check mode or a failed write, 2 usage error,
+#             3 rulesets unavailable (HTTP 403: private repository of a personal account without a
+#             paid plan; fall back to the five-layer main-only enforcement, ecosystem 3.1).
+# Requires gh authenticated as the repository owner (admin) and jq.
 set -euo pipefail
 
 repo="" flow="" mode="dry-run" merge_methods="merge"
 rules_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../rulesets" && pwd)"
 
-usage() { sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+need_value() { [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "$1 needs a value" >&2; usage 2; }; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --repo) repo="${2:-}"; shift 2 ;;
-    --flow) flow="${2:-}"; shift 2 ;;
+    --repo) need_value "$@"; repo="$2"; shift 2 ;;
+    --flow) need_value "$@"; flow="$2"; shift 2 ;;
+    --merge-methods) need_value "$@"; merge_methods="$2"; shift 2 ;;
+    --rulesets-dir) need_value "$@"; rules_dir="$2"; shift 2 ;;
     --apply) mode="apply"; shift ;;
     --check) mode="check"; shift ;;
-    --merge-methods) merge_methods="${2:-}"; shift 2 ;;
-    --rulesets-dir) rules_dir="${2:-}"; shift 2 ;;
     -h|--help) usage 0 ;;
-    *) echo "unknown argument: $1" >&2; usage ;;
+    *) echo "unknown argument: $1" >&2; usage 2 ;;
   esac
 done
 
-[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "--repo owner/name is required" >&2; usage; }
+[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "--repo owner/name is required" >&2; usage 2; }
 case "$flow" in
   release) files=(release-develop.json release-main.json tags.json) ;;
   main-only) files=(main-only.json tags.json) ;;
-  *) echo "--flow must be release or main-only" >&2; usage ;;
+  *) echo "--flow must be release or main-only" >&2; usage 2 ;;
 esac
 [[ "$merge_methods" =~ ^(merge|squash|rebase)(,(merge|squash|rebase))*$ ]] || { echo "invalid --merge-methods" >&2; exit 2; }
+
+err="$(mktemp)"
+trap 'rm -f "$err"' EXIT
 
 methods_json=$(jq -cn --arg m "$merge_methods" '$m | split(",")')
 
@@ -48,49 +54,75 @@ render() {  # ruleset file -> final JSON with the merge methods applied
   ' "$rules_dir/$1"
 }
 
-normalize() {  # fields we manage, stable order; server-added defaults are dropped before comparing
-  jq -S '{name, target, enforcement, bypass_actors: (.bypass_actors // []),
-          conditions, rules: (.rules | sort_by(.type) | map(del(.parameters.required_reviewers?, .parameters.require_extra_approval_for_unattributed_changes?)))}'
+# Project a ruleset onto the keys the desired ruleset manages, in a stable order.
+project() {  # $1 = desired JSON; stdin = any ruleset JSON
+  jq -S --argjson want "$1" '
+    def keep($w): if ($w | type) == "object" and (type == "object")
+                  then with_entries(.key as $k | select($w | has($k)) | .value |= keep($w[$k]))
+                  else . end;
+    {name, target, enforcement, bypass_actors: (.bypass_actors // []), conditions,
+     rules: [ .rules[] as $r
+              | ($want.rules[] | select(.type == $r.type)) as $wr
+              | $r | keep($wr) ] | sort_by(.type)}'
 }
 
-if ! existing=$(gh api "repos/$repo/rulesets?includes_parents=false&per_page=100" 2>/tmp/apply-rulesets.err); then
-  if grep -q "403" /tmp/apply-rulesets.err; then
-    echo "rulesets unavailable for $repo (HTTP 403: private repository on a plan without rulesets)" >&2
+is_forbidden() { grep -Eq 'HTTP 403|\(403\)' "$err"; }
+
+if ! existing=$(gh api "repos/$repo/rulesets?includes_parents=false&per_page=100" 2>"$err"); then
+  if is_forbidden; then
+    echo "rulesets unavailable for $repo (HTTP 403)" >&2
     exit 3
   fi
-  cat /tmp/apply-rulesets.err >&2
+  cat "$err" >&2
   exit 1
 fi
 
-drift=0
+drift=0 rc=0
 for f in "${files[@]}"; do
   desired=$(render "$f")
   name=$(jq -r .name <<<"$desired")
+  want=$(project "$desired" <<<"$desired")
   id=$(jq -r --arg n "$name" '.[] | select(.name == $n and .source_type == "Repository") | .id' <<<"$existing" | head -n 1)
   if [ -n "$id" ]; then
-    current=$(gh api "repos/$repo/rulesets/$id" | normalize)
-    if [ "$current" = "$(normalize <<<"$desired")" ]; then
+    if ! current_raw=$(gh api "repos/$repo/rulesets/$id" 2>"$err"); then
+      cat "$err" >&2; rc=1; continue
+    fi
+    current=$(project "$desired" <<<"$current_raw")
+    if [ "$current" = "$want" ]; then
       echo "ok       $name (id $id) is up to date"
       continue
     fi
     drift=1
-    case "$mode" in
-      apply) gh api -X PUT "repos/$repo/rulesets/$id" --input - <<<"$desired" >/dev/null && echo "updated  $name (id $id)" ;;
-      *) echo "differs  $name (id $id)"; diff <(echo "$current" | jq .) <(normalize <<<"$desired" | jq .) || true ;;
-    esac
+    if [ "$mode" = "apply" ]; then
+      if gh api -X PUT "repos/$repo/rulesets/$id" --input - <<<"$desired" >/dev/null 2>"$err"; then
+        echo "updated  $name (id $id)"
+      else
+        echo "FAILED   $name (id $id): $(cat "$err")" >&2
+        if is_forbidden; then rc=3; else rc=1; fi
+      fi
+    else
+      echo "differs  $name (id $id)"
+      diff <(jq . <<<"$current") <(jq . <<<"$want") || true
+    fi
   else
     drift=1
-    case "$mode" in
-      apply) new_id=$(gh api -X POST "repos/$repo/rulesets" --input - <<<"$desired" --jq .id) && echo "created  $name (id $new_id)" ;;
-      *) echo "missing  $name (would be created)" ;;
-    esac
+    if [ "$mode" = "apply" ]; then
+      if new_id=$(gh api -X POST "repos/$repo/rulesets" --input - --jq .id <<<"$desired" 2>"$err"); then
+        echo "created  $name (id $new_id)"
+      else
+        echo "FAILED   $name: $(cat "$err")" >&2
+        if is_forbidden; then rc=3; else rc=1; fi
+      fi
+    else
+      echo "missing  $name (would be created)"
+    fi
   fi
 done
 
 if [ "$mode" = "dry-run" ] && [ "$drift" -eq 1 ]; then
   echo "dry run: nothing written; re-run with --apply"
 fi
-if [ "$mode" = "check" ] && [ "$drift" -eq 1 ]; then
-  exit 1
+if [ "$mode" = "check" ] && [ "$drift" -eq 1 ] && [ "$rc" -eq 0 ]; then
+  rc=1
 fi
-exit 0
+exit "$rc"
