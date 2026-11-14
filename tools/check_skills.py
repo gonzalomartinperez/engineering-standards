@@ -38,7 +38,7 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
         raise ValueError("frontmatter is not closed with ---")
     data: dict = {}
     parent = None
-    for raw in text[4:end].splitlines():
+    for line_number, raw in enumerate(text[4:end].splitlines(), start=2):
         if not raw.strip() or raw.lstrip().startswith("#"):
             continue
         m = re.match(r"^(\s*)([A-Za-z0-9_-]+):\s*(.*)$", raw)
@@ -48,7 +48,11 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
         value = value.strip()
         if value[:1] in "\"'" and value[-1:] == value[:1] and len(value) >= 2:
             value = json.loads(value) if value[0] == '"' else value[1:-1]
-        if indent and parent is not None:
+        if indent:
+            if parent is None or not isinstance(data.get(parent), dict):
+                raise ValueError(
+                    f"invalid nested frontmatter line {line_number}: {raw!r}"
+                )
             data[parent][key] = value
         elif value == "":
             data[key], parent = {}, key
