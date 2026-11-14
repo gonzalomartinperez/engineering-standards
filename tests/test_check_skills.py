@@ -1,4 +1,5 @@
 import contextlib
+import datetime
 import io
 import json
 import os
@@ -46,6 +47,23 @@ class CheckSkillsTests(unittest.TestCase):
             self.assertIn("must equal the directory name", out)
             self.assertIn("Not for", out)
             self.assertIn("older than 180 days", out)
+
+    def test_malformed_nested_frontmatter_is_reported(self):
+        malformed = (
+            ("name: example\nmetadata: invalid\n  owner: team", "line 4", "owner: team"),
+            ("  name: example", "line 2", "name: example"),
+        )
+        for frontmatter, line, text in malformed:
+            with self.subTest(frontmatter=frontmatter), tempfile.TemporaryDirectory() as tmp:
+                sd = self._copy(tmp)
+                (sd / "SKILL.md").write_text(f"---\n{frontmatter}\n---\nbody\n")
+                errors, warnings = C.check_skill(
+                    sd, datetime.date(2026, 11, 14), 180
+                )
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn(f"write-adr: invalid nested frontmatter {line}", errors[0])
+                self.assertIn(text, errors[0])
+                self.assertEqual(warnings, [])
 
     def test_staleness_is_a_warning_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:

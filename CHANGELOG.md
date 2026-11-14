@@ -5,6 +5,10 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Report malformed nested skill frontmatter as a validation error instead of crashing.
+
 ## [1.1.1] - 2026-11-14
 
 ### Fixed
