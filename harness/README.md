@@ -13,3 +13,8 @@ Shared agent-harness files for the ecosystem repositories (ecosystem standard 15
 
 Safety hooks and deny rules are repeated in every repository because plugin-provided agents ignore
 hooks. Hard rules belong in hooks, not prose.
+
+Guard policy notes: `rm -rf` is allowed on relative paths inside the working tree (for example
+`node_modules`, `dist`, `.next`) and on temp directories, and blocked on absolute paths, `~`, `..`,
+`.git` and bare `.`/`*`. The hooks fail closed on internal errors. They are best-effort guards that
+unwrap common wrappers, not a sandbox; the sandbox and approval policy remain the outer layer.

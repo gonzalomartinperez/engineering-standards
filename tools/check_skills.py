@@ -8,7 +8,8 @@ Per skill directory:
   SKILL.md frontmatter: name == directory (lowercase, digits, hyphens, at most 64 chars);
     description at most 1024 chars containing "Use when" and "Not for" (or "Do not use for");
     metadata.owner, metadata.last-reviewed (YYYY-MM-DD, not older than --max-age-days),
-    metadata.version; body at most 500 lines (warning above 150).
+    metadata.version; body at most 500 lines (warning above 150). A stale skill is a warning on PRs
+    and an error with --strict-staleness (monthly scheduled check).
   evals/triggers.json: at least 10 queries, at least 3 positive and 3 negative, each with a
     train/validation split, validation share between 30% and 50%.
   evals/evals.json: at least 3 output evals, each with a prompt and non-empty assertions.
@@ -56,7 +57,8 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
     return data, text[end + 5:]
 
 
-def check_skill(sd: pathlib.Path, today: datetime.date, max_age: int) -> tuple[list[str], list[str]]:
+def check_skill(sd: pathlib.Path, today: datetime.date, max_age: int,
+                strict_staleness: bool = False) -> tuple[list[str], list[str]]:
     errors, warnings = [], []
     name = sd.name
     skill_md = sd / "SKILL.md"
@@ -83,8 +85,11 @@ def check_skill(sd: pathlib.Path, today: datetime.date, max_age: int) -> tuple[l
             errors.append(f"{name}: metadata.{key} missing")
     try:
         reviewed = datetime.date.fromisoformat(str(md.get("last-reviewed", "")))
-        if (today - reviewed).days > max_age:
-            errors.append(f"{name}: last-reviewed {reviewed} is older than {max_age} days (review the skill)")
+        if reviewed > today:
+            errors.append(f"{name}: last-reviewed {reviewed} is in the future")
+        elif (today - reviewed).days > max_age:
+            msg = f"{name}: last-reviewed {reviewed} is older than {max_age} days (review the skill)"
+            (errors if strict_staleness else warnings).append(msg)
     except ValueError:
         if md.get("last-reviewed"):
             errors.append(f"{name}: metadata.last-reviewed must be YYYY-MM-DD")
@@ -93,7 +98,7 @@ def check_skill(sd: pathlib.Path, today: datetime.date, max_age: int) -> tuple[l
         errors.append(f"{name}: body has {lines} lines (hard cap 500)")
     elif lines > 150:
         warnings.append(f"{name}: body has {lines} lines (typical < 150)")
-    if re.search(r"(?i)(api[_-]?key|secret|token)\s*[:=]\s*\S{12,}", body):
+    if re.search(r"(?i)(api[_-]?key|secret|token)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{24,}", body):
         errors.append(f"{name}: body looks like it contains a secret")
 
     trig = sd / "evals" / "triggers.json"
@@ -150,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skills", type=pathlib.Path, default=pathlib.Path(".agents/skills"))
     parser.add_argument("--claude-links", type=pathlib.Path, default=None)
     parser.add_argument("--max-age-days", type=int, default=180)
+    parser.add_argument("--strict-staleness", action="store_true",
+                        help="stale skills are errors (use in the monthly scheduled check, not on PRs)")
     parser.add_argument("--today", default=None, help="override today's date (YYYY-MM-DD) for tests")
     args = parser.parse_args(argv)
     if not args.skills.is_dir():
@@ -159,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     errors, warnings = [], []
     dirs = sorted(p for p in args.skills.iterdir() if p.is_dir())
     for sd in dirs:
-        e, w = check_skill(sd, today, args.max_age_days)
+        e, w = check_skill(sd, today, args.max_age_days, args.strict_staleness)
         errors += e
         warnings += w
     if args.claude_links:

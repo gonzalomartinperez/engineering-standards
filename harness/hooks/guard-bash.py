@@ -1,132 +1,281 @@
 #!/usr/bin/env python3
 """guard-bash: PreToolUse hook that blocks dangerous shell commands (ecosystem 15.6, OD-74).
 
-Claude Code: register for the Bash tool; the hook reads the event JSON on stdin and exits 2 with a
-reason on stderr to block. Codex (`[features] hooks = true`): same script; a list-form command is
-joined before matching. Stdlib only. Blocks:
-  - `pkill -f` / `pgrep -f | xargs kill` (kill by verified PID only, OD-74)
-  - force pushes (`--force`, `-f`, `--force-with-lease`, `+refspec`) that target main or develop,
-    or any force push while main or develop is checked out; any push or deletion of main/develop refs
-    via `:main`
-  - reading or copying `.env` files (`.env.example` and `.env.sample` are allowed)
-  - `git reset --hard`, `git clean -fdx`, `rm -rf` outside /tmp, `docker system prune`,
-    `docker volume prune`, `docker compose down -v`, `DROP DATABASE`
-Hard rules live here, not in prose (ecosystem 15.1). Do not work around a block; ask the owner.
+Claude Code: register for the Bash tool. The hook reads the event JSON on stdin and exits 2 with a
+reason on stderr to block. Codex: same script; argv-list commands (`["bash", "-lc", "<script>"]`)
+are unwrapped. Stdlib only, Python 3.9+. A best-effort guard, not a sandbox: it tokenizes the
+command, splits it on shell operators, unwraps common wrappers (sudo, env, timeout, nice, nohup,
+xargs, eval, `bash|sh|zsh -c`) and recurses into `$(...)` and backticks. Blocks:
+
+  - `pkill -f`, and `pgrep -f` feeding `kill` (kill only by verified PID, OD-74)
+  - force pushes (`--force*`, any short-option cluster with `f`, `+refspec`) that target main or
+    develop, including `HEAD`/`@` while one of them is checked out, and force with --all/--mirror;
+    deleting main or develop on a remote; `git update-ref -d refs/heads/main|develop`
+  - reading or copying `.env` files (`*.example`, `*.sample`, `*.template`, `*.dist` allowed;
+    `--env-file` loading is allowed because the content does not enter the context)
+  - `git reset --hard`, `git clean -f` with `-d` or `-x`, `rm` recursive+force outside a temp
+    directory or the working tree, docker prune / `volume rm` / `compose down -v`, destructive SQL
+Fails closed: an internal error blocks the command. Hard rules live here, not in prose (15.1).
 """
 from __future__ import annotations
 
 import json
+import os
+import posixpath
 import re
 import shlex
 import subprocess
 import sys
 
-PROTECTED = ("main", "develop")
-ENV_FILE = re.compile(r"(^|[/\s'\"=<>])\.env(\.(?!example\b|sample\b)[\w.-]+)?(?=$|[\s'\";|&)<>])")
+PROTECTED = {"main", "develop"}
+SHELLS = {"bash", "sh", "zsh", "dash", "ksh"}
+OPERATORS = {";", "&&", "||", "|", "&", "|&", "(", ")", "{", "}", "!", ";;"}
+KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for", "case", "esac", "in"}
+SAFE_ENV_SUFFIX = re.compile(r"\.(example|sample|template|dist)(\.|$)")
+ENV_TOKEN = re.compile(r"(^|[/=<>])\.env([.*?][^/]*)?$")
+SQL = re.compile(r"\b(DROP\s+(DATABASE|SCHEMA)|TRUNCATE\s+TABLE)\b", re.I)
+MESSAGE_FLAGS = {"-m", "--message", "--grep", "-F", "--file", "--title", "--body", "-t", "-b"}
+TEMP_PREFIXES = ("/tmp/", "/var/tmp/", "$TMPDIR/", "${TMPDIR}/", "$RUNNER_TEMP/", "${RUNNER_TEMP}/")
+
+
+def strip_prefix(text: str, prefix: str) -> str:
+    return text[len(prefix):] if text.startswith(prefix) else text
+
+
+def tokenize(cmd: str) -> list[str]:
+    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|(){}<>!")
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    try:
+        return list(lexer)
+    except ValueError:  # unbalanced quotes: fall back to a rough split
+        return re.findall(r"[;&|(){}<>!]+|[^\s;&|(){}<>!]+", cmd)
+
+
+def substitutions(cmd: str) -> list[str]:
+    inner = re.findall(r"\$\(([^()]*(?:\([^()]*\)[^()]*)*)\)", cmd)
+    inner += re.findall(r"`([^`]*)`", cmd)
+    return inner
+
+
+def segments(tokens: list[str]) -> list[list[str]]:
+    out, cur = [], []
+    for tok in tokens:
+        if tok in OPERATORS or (not cur and tok in KEYWORDS):
+            if cur:
+                out.append(cur)
+            cur = []
+        elif tok and set(tok) <= set(";&|(){}!"):  # operator runs such as ";;" or "&&("
+            if cur:
+                out.append(cur)
+            cur = []
+        else:
+            cur.append(tok)
+    if cur:
+        out.append(cur)
+    return out
+
+
+def unwrap(words: list[str]) -> list[str]:
+    """Drop leading assignments and wrapper commands with their options."""
+    while words:
+        head = words[0].rsplit("/", 1)[-1]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+            words = words[1:]
+        elif head in ("sudo", "doas"):
+            words = words[1:]
+            while words and words[0].startswith("-"):
+                words = words[2:] if words[0] in ("-u", "-g", "-C", "-h", "-p") else words[1:]
+        elif head == "env":
+            words = words[1:]
+            while words and (words[0].startswith("-") or "=" in words[0]):
+                words = words[2:] if words[0] in ("-u", "-C", "-S") else words[1:]
+        elif head == "timeout":
+            words = words[1:]
+            while words and words[0].startswith("-"):
+                words = words[2:] if words[0] in ("-s", "-k", "--signal", "--kill-after") else words[1:]
+            words = words[1:]  # duration
+        elif head == "nice":
+            words = words[1:]
+            if words and words[0] in ("-n", "--adjustment"):
+                words = words[2:]
+            elif words and re.fullmatch(r"-\d+|--adjustment=.*", words[0]):
+                words = words[1:]
+        elif head == "xargs":
+            words = words[1:]
+            while words and words[0].startswith("-"):
+                words = words[2:] if words[0] in ("-I", "-n", "-P", "-L", "-d", "-E", "-s") else words[1:]
+        elif head in ("nohup", "command", "exec", "time", "builtin", "stdbuf", "chrt", "ionice"):
+            words = words[1:]
+            while words and words[0].startswith("-"):
+                words = words[1:]
+        else:
+            return words
+    return words
+
+
+def current_branch(git_dir: str | None) -> str:
+    try:
+        args = ["git"] + (["-C", git_dir] if git_dir else []) + ["symbolic-ref", "--quiet", "--short", "HEAD"]
+        return subprocess.run(args, capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def short_flags(args: list[str]) -> set[str]:
+    flags: set[str] = set()
+    for a in args:
+        if a.startswith("--"):
+            flags.add(a.split("=", 1)[0])
+        elif a.startswith("-") and len(a) > 1:
+            flags.update(f"-{c}" for c in a[1:])
+    return flags
+
+
+def check_git(args: list[str]) -> str | None:
+    git_dir, i = None, 0
+    while i < len(args) and args[i].startswith("-"):
+        if args[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"):
+            if args[i] == "-C" and i + 1 < len(args):
+                git_dir = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    if i >= len(args):
+        return None
+    sub, rest = args[i], args[i + 1:]
+    flags = short_flags(rest)
+    if sub == "push":
+        force = bool(flags & {"-f", "--force", "--force-with-lease", "--force-if-includes"})
+        positional = [a for a in rest if not a.startswith("-")]
+        refspecs = positional[1:]
+        if any(r.startswith("+") for r in refspecs):
+            force = True
+        targets = set()
+        for spec in refspecs:
+            spec = spec.lstrip("+")
+            src, _, dst = spec.partition(":")
+            dst = dst if ":" in spec else src
+            if spec.startswith(":") and strip_prefix(dst, "refs/heads/") in PROTECTED:
+                return "deleting a protected branch on a remote is blocked"
+            if dst in ("HEAD", "@") or src in ("HEAD", "@") and not dst:
+                dst = current_branch(git_dir)
+            targets.add(strip_prefix(dst, "refs/heads/"))
+        if flags & {"-d", "--delete"} and targets & PROTECTED:
+            return "deleting a protected branch on a remote is blocked"
+        if force and flags & {"--all", "--mirror"}:
+            return "force push with --all or --mirror is blocked"
+        if force and (targets & PROTECTED or (not refspecs and current_branch(git_dir) in PROTECTED)):
+            return "force push to main or develop is blocked"
+    elif sub == "reset" and "--hard" in flags:
+        return "git reset --hard is blocked (use git stash or a new branch)"
+    elif sub == "clean" and (flags & {"-f", "--force"}) and (flags & {"-d", "-x", "-X"}):
+        return "git clean with -f and -d/-x is blocked"
+    elif sub == "update-ref" and flags & {"-d"} and any(strip_prefix(a, "refs/heads/") in PROTECTED for a in rest):
+        return "deleting a protected branch ref is blocked"
+    return None
+
+
+def risky_rm_path(path: str) -> bool:
+    if path.startswith(TEMP_PREFIXES):
+        norm = posixpath.normpath(path)
+        return ".." in path.split("/") or norm in ("/tmp", "/var/tmp")
+    if path.startswith(("/", "~", "$")) or path in (".", "..", "*", ".git") or ".." in path.split("/"):
+        return True
+    return posixpath.normpath(path).split("/")[0] == ".git"
+
+
+def reason_for_words(words: list[str], depth: int) -> str | None:
+    words = unwrap(words)
+    if not words:
+        return None
+    name, args = words[0].rsplit("/", 1)[-1], words[1:]
+    if name in SHELLS:
+        for j, a in enumerate(args):
+            if a.startswith("-") and not a.startswith("--") and "c" in a and j + 1 < len(args):
+                return reason_for(args[j + 1], depth + 1)
+        return None
+    if name == "eval":
+        return reason_for(" ".join(args), depth + 1)
+    if name == "pkill" and short_flags(args) & {"-f", "--full"}:
+        return "pkill -f is blocked: kill only by verified PID (OD-74)"
+    if name == "git":
+        return check_git(args)
+    if name == "rm":
+        flags = short_flags(args)
+        if flags & {"-r", "-R", "--recursive"} and flags & {"-f", "--force"}:
+            paths = [a for a in args if not a.startswith("-")]
+            if not paths or any(risky_rm_path(p) for p in paths):
+                return "rm -rf outside a temp directory or the working tree is blocked"
+    if name in ("docker", "podman"):
+        joined = " ".join(args)
+        if re.search(r"\b(system|volume|image|builder|container|network)\s+prune\b", joined):
+            return "docker prune is blocked"
+        if re.search(r"\bvolume\s+rm\b", joined):
+            return "docker volume rm is blocked"
+        if re.search(r"\bcompose\b", joined) and "down" in args and short_flags(args) & {"-v", "--volumes"}:
+            return "docker compose down -v is blocked (it deletes volumes)"
+    if name == "docker-compose" and "down" in args and short_flags(args) & {"-v", "--volumes"}:
+        return "docker compose down -v is blocked (it deletes volumes)"
+    return None
+
+
+def env_reference(tokens: list[str]) -> bool:
+    skip = False
+    for tok in tokens:
+        if skip:
+            skip = False
+            continue
+        if tok in MESSAGE_FLAGS:
+            skip = True
+            continue
+        if tok.startswith("--env-file") or tok.startswith(("--message=", "--grep=", "--title=", "--body=")):
+            continue
+        base = tok.rsplit("/", 1)[-1]
+        if ENV_TOKEN.search(tok) and not SAFE_ENV_SUFFIX.search(base):
+            return True
+    return False
+
+
+def reason_for(cmd: str, depth: int = 0) -> str | None:
+    if depth > 4:
+        return None
+    tokens = tokenize(cmd)
+    if env_reference(tokens):
+        return "reading or copying .env files is blocked (use .env.example; secrets never enter the context)"
+    for words in segments(tokens):
+        if SQL.search(" ".join(w for w in words if w not in MESSAGE_FLAGS)) and words[0].rsplit("/", 1)[-1] != "git":
+            return "destructive SQL (DROP DATABASE/SCHEMA, TRUNCATE TABLE) is blocked"
+        why = reason_for_words(words, depth)
+        if why:
+            return why
+    if re.search(r"\bpgrep\b[^;&|]*?\s-[A-Za-z]*f", cmd) and re.search(r"(^|[\s;&|(`])kill\b", cmd):
+        return "killing the output of pgrep -f is blocked: kill only by verified PID (OD-74)"
+    for inner in substitutions(cmd):
+        why = reason_for(inner, depth + 1)
+        if why:
+            return why
+    return None
 
 
 def command_of(event: dict) -> str:
-    tool_input = event.get("tool_input") or {}
-    cmd = tool_input.get("command", "")
+    tool_input = event.get("tool_input") if isinstance(event, dict) else None
+    cmd = (tool_input or {}).get("command", "") if isinstance(tool_input, dict) else ""
     if isinstance(cmd, list):
         cmd = " ".join(shlex.quote(str(c)) for c in cmd)
     return str(cmd)
 
 
-def segments(cmd: str) -> list[list[str]]:
-    """Split on ; && || | and newlines, then shell-split each part (best effort)."""
-    out = []
-    for part in re.split(r"\|\||&&|[;|\n]", cmd):
-        try:
-            words = shlex.split(part, comments=True)
-        except ValueError:
-            words = part.split()
-        while words and re.fullmatch(r"\w+=.*", words[0]):  # leading VAR=value assignments
-            words = words[1:]
-        while words and words[0] in ("sudo", "env", "command", "exec", "nohup", "time"):
-            words = words[1:]
-        if words:
-            out.append(words)
-    return out
-
-
-def current_branch() -> str:
-    try:
-        return subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True,
-                              timeout=5).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return ""
-
-
-def check_git_push(args: list[str]) -> str | None:
-    force = any(a in ("--force", "-f", "--force-with-lease", "--force-if-includes") or a.startswith("--force-with-lease=")
-                for a in args)
-    refspecs = [a for a in args if not a.startswith("-")][1:]  # after the remote
-    targets = set()
-    for spec in refspecs:
-        if spec.startswith("+"):
-            force = True
-            spec = spec[1:]
-        dst = spec.split(":", 1)[1] if ":" in spec else spec
-        if spec.startswith(":") and dst.removeprefix("refs/heads/") in PROTECTED:
-            return f"deleting a protected branch ({dst}) is blocked"
-        targets.add(dst.removeprefix("refs/heads/"))
-    if "--delete" in args or "-d" in args:
-        if targets & set(PROTECTED):
-            return "deleting a protected branch is blocked"
-    if not force:
-        return None
-    if targets & set(PROTECTED):
-        return "force push to main or develop is blocked"
-    if not refspecs and current_branch() in PROTECTED:
-        return "force push while main or develop is checked out is blocked"
-    return None
-
-
-def reason_for(cmd: str) -> str | None:
-    if ENV_FILE.search(cmd):
-        return "reading or copying .env files is blocked (use .env.example; secrets never enter the context)"
-    if re.search(r"\bDROP\s+DATABASE\b", cmd, re.I):
-        return "DROP DATABASE is blocked"
-    for words in segments(cmd):
-        name = words[0].rsplit("/", 1)[-1]
-        args = words[1:]
-        if name == "pkill" and any(a == "-f" or (a.startswith("-") and not a.startswith("--") and "f" in a) for a in args):
-            return "pkill -f is blocked: kill only by verified PID (OD-74)"
-        if name == "git" and args:
-            sub_i = next((i for i, a in enumerate(args) if not a.startswith("-")), None)
-            if sub_i is None:
-                continue
-            sub, rest = args[sub_i], args[sub_i + 1:]
-            if sub == "push":
-                why = check_git_push(rest)
-                if why:
-                    return why
-            if sub == "reset" and "--hard" in rest:
-                return "git reset --hard is blocked (use git stash or a new branch)"
-            if sub == "clean" and any(a.startswith("-") and "f" in a and ("d" in a or "x" in a) for a in rest):
-                return "git clean -fd/-fx is blocked"
-        if name == "rm" and any(a.startswith("-") and "r" in a.lower() and "f" in a for a in args):
-            paths = [a for a in args if not a.startswith("-")]
-            if not paths or any(not re.match(r"^(/tmp/|\$TMPDIR/|\$\{TMPDIR\}/|\$RUNNER_TEMP/)", p) for p in paths):
-                return "rm -rf outside a temp directory is blocked"
-        if name == "docker":
-            joined = " ".join(args)
-            if re.search(r"\b(system|volume|image|builder)\s+prune\b", joined):
-                return "docker prune is blocked"
-            if re.search(r"\bcompose\b.*\bdown\b.*(\s-v\b|--volumes)", joined):
-                return "docker compose down -v is blocked (it deletes volumes)"
-        if name == "docker-compose" and "down" in args and ("-v" in args or "--volumes" in args):
-            return "docker compose down -v is blocked (it deletes volumes)"
-    return None
-
-
 def main() -> int:
+    raw = sys.stdin.read()
     try:
-        event = json.load(sys.stdin)
+        event = json.loads(raw)
     except ValueError:
         return 0  # not a tool event; nothing to guard
-    why = reason_for(command_of(event))
+    try:
+        why = reason_for(command_of(event))
+    except Exception as exc:  # noqa: BLE001 - fail closed on any internal error
+        why = f"guard-bash could not analyse the command ({exc.__class__.__name__}); failing closed"
     if why:
         print(f"BLOCKED by guard-bash: {why}. Do not work around this; ask the owner.", file=sys.stderr)
         return 2
@@ -134,4 +283,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    os.environ.setdefault("LC_ALL", "C")
     sys.exit(main())

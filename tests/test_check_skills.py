@@ -41,11 +41,18 @@ class CheckSkillsTests(unittest.TestCase):
             sd = self._copy(tmp)
             text = (sd / "SKILL.md").read_text()
             (sd / "SKILL.md").write_text(text.replace("name: write-adr", "name: Write_ADR").replace("Not for", "Except"))
-            code, out = quiet(C.main, ["--skills", str(sd.parent), "--today", "2027-12-01"])
+            code, out = quiet(C.main, ["--skills", str(sd.parent), "--today", "2027-12-01", "--strict-staleness"])
             self.assertEqual(code, 1)
             self.assertIn("must equal the directory name", out)
             self.assertIn("Not for", out)
             self.assertIn("older than 180 days", out)
+
+    def test_staleness_is_a_warning_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sd = self._copy(tmp)
+            code, out = quiet(C.main, ["--skills", str(sd.parent), "--today", "2027-12-01"])
+            self.assertEqual(code, 0)
+            self.assertIn("::warning", out)
 
     def test_trigger_eval_rules(self):
         with tempfile.TemporaryDirectory() as tmp:

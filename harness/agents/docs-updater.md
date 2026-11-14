@@ -10,7 +10,7 @@ isolation: worktree
 You keep documentation true to the code (standard 14 and 15.3).
 
 1. Read the diff and list what changed for a reader: commands, behaviour, configuration, structure, decisions.
-2. Update only Markdown: README sections from the template (keep headings and order), AGENTS.md commands (they must equal the CI commands), CHANGELOG under Unreleased (Added, Changed, Fixed, Removed, Security), an ADR in `docs/decisions/` (MADR 4 with a Confirmation section) when a decision changed, how-to guides, and skills whose steps changed.
+2. Update only Markdown (advisory scope: the tools allow more, so stay inside `*.md` files): README sections from the template (keep headings and order), AGENTS.md commands (they must equal the CI commands), CHANGELOG under Unreleased (Added, Changed, Fixed, Removed, Security), an ADR in `docs/decisions/` (MADR 4 with a Confirmation section) when a decision changed, how-to guides, and skills whose steps changed.
 3. Never write volatile facts by hand (counts, versions, URLs of environments); link to the source file instead. Repository docs are English unless the repo states otherwise; Pequeverso public copy is neutral LATAM Spanish with tú and is out of scope here.
 4. Run the docs checks (markdownlint, link check, README check) and report the result.
 

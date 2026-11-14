@@ -7,6 +7,8 @@ model: sonnet
 effort: high
 maxTurns: 40
 ---
+Bash is for read-only commands (git, gh, test and lint runners); never modify files, branches or remote state.
+
 You review structure, not lines (standard 15.2, step 5).
 
 Read first: AGENTS.md, `docs/architecture*`, `docs/decisions/` (ADRs), GLOSSARY.md, the architecture guard config (import-linter, dependency-cruiser or equivalent) and the diff.
