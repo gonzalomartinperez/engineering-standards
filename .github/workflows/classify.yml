@@ -1,0 +1,278 @@
+# Reusable workflow: classify a run into CI profiles (ecosystem standard 6.0 and 6.1).
+#
+# Reads the changed files (GitHub API, no checkout of PR code is executed), the branch names and
+# the PR labels, applies the caller's `.github/ci-profile.json`, and emits the profiles and the job
+# list that downstream jobs gate on. Fail-closed: a config error, a diff error, an empty diff, a
+# changed profile map, or any changed file outside every profile runs everything (`all == 'true'`).
+#
+# Caller (job level, pinned by SHA):
+#   classify:
+#     uses: gonzalomartinperez/engineering-standards/.github/workflows/classify.yml@<sha> # vX.Y.Z
+#     permissions:
+#       contents: read
+#       pull-requests: read
+#   lint:
+#     needs: classify
+#     if: contains(fromJSON(needs.classify.outputs.jobs), 'lint')
+name: classify
+
+on:
+  workflow_call:
+    inputs:
+      config-path:
+        description: Path of the CI profile map in the caller repository.
+        type: string
+        default: .github/ci-profile.json
+      full-on-push:
+        description: Run everything on push, schedule and workflow_dispatch events (safe-point rule 3A).
+        type: boolean
+        default: true
+    outputs:
+      profile:
+        description: "Primary profile: release, hotfix, deps-weekly, full, docs or code."
+        value: ${{ jobs.classify.outputs.profile }}
+      profiles:
+        description: JSON array of matched profile names (every defined profile when all is true).
+        value: ${{ jobs.classify.outputs.profiles }}
+      jobs:
+        description: JSON array of job names to run (base plus the adds of the matched profiles).
+        value: ${{ jobs.classify.outputs.jobs }}
+      all:
+        description: "'true' when everything must run (fail-closed or full profile)."
+        value: ${{ jobs.classify.outputs.all }}
+      docs-only:
+        description: "'true' when only the docs profile matched (docs fast path)."
+        value: ${{ jobs.classify.outputs.docs-only }}
+      reason:
+        description: Human-readable reason for the decision.
+        value: ${{ jobs.classify.outputs.reason }}
+
+permissions: {}
+
+jobs:
+  classify:
+    name: classify
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      profile: ${{ steps.classify.outputs.profile }}
+      profiles: ${{ steps.classify.outputs.profiles }}
+      jobs: ${{ steps.classify.outputs.jobs }}
+      all: ${{ steps.classify.outputs.all }}
+      docs-only: ${{ steps.classify.outputs.docs-only }}
+      reason: ${{ steps.classify.outputs.reason }}
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+
+      - name: Check out the profile map only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          sparse-checkout: ${{ inputs.config-path }}
+          sparse-checkout-cone-mode: false
+
+      - name: Classify
+        id: classify
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONFIG_PATH: ${{ inputs.config-path }}
+          FULL_ON_PUSH: ${{ inputs.full-on-push }}
+        run: |
+          # classify v1 — the single source of the classification logic; tests extract and run this block.
+          import json, os, re, sys, urllib.request
+
+          DEFAULT_MATCH = {
+              "deps-weekly": [{"branches": ["dependabot/**"]}, {"labels": ["deps-weekly"]}],
+              "release": [{"branches": ["develop"], "base": ["main"]}, {"labels": ["release"]}],
+              "hotfix": [{"branches": ["hotfix/**"], "base": ["main"]}],
+          }
+          FULL_BY_DEFAULT = {"deps-weekly", "release"}
+          PRECEDENCE = ["release", "hotfix", "deps-weekly"]
+
+
+          def glob_to_regex(pattern):
+              out, i = "", 0
+              while i < len(pattern):
+                  if pattern.startswith("**/", i):
+                      out += "(?:.*/)?"
+                      i += 3
+                  elif pattern.startswith("**", i):
+                      out += ".*"
+                      i += 2
+                  elif pattern[i] == "*":
+                      out += "[^/]*"
+                      i += 1
+                  elif pattern[i] == "?":
+                      out += "[^/]"
+                      i += 1
+                  else:
+                      out += re.escape(pattern[i])
+                      i += 1
+              return re.compile(out + r"\Z")
+
+
+          def matches(path, patterns):
+              return any(glob_to_regex(p).match(path) for p in patterns)
+
+
+          def condition_holds(cond, ctx):
+              for key, field in (("branches", "head"), ("base", "base")):
+                  if key in cond and not (ctx[field] and matches(ctx[field], cond[key])):
+                      return False
+              if "labels" in cond and not set(cond["labels"]) & set(ctx["labels"]):
+                  return False
+              if "events" in cond and ctx["event"] not in cond["events"]:
+                  return False
+              return any(k in cond for k in ("branches", "base", "labels", "events"))
+
+
+          def api_get(url):
+              req = urllib.request.Request(url, headers={
+                  "Authorization": "Bearer " + os.environ.get("GH_TOKEN", ""),
+                  "Accept": "application/vnd.github+json",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              })
+              with urllib.request.urlopen(req, timeout=20) as resp:
+                  return json.load(resp)
+
+
+          def changed_files(event_name, event):
+              fixture = os.environ.get("CLASSIFY_CHANGED_FILES_FILE")
+              if fixture:
+                  with open(fixture, encoding="utf-8") as fh:
+                      return [line.strip() for line in fh if line.strip()]
+              api, repo = os.environ["GITHUB_API_URL"], os.environ["GITHUB_REPOSITORY"]
+              if event_name == "pull_request":
+                  number, expected = event["pull_request"]["number"], event["pull_request"]["changed_files"]
+                  files = []
+                  for page in range(1, 31):
+                      batch = api_get(f"{api}/repos/{repo}/pulls/{number}/files?per_page=100&page={page}")
+                      files += [f["filename"] for f in batch]
+                      files += [f["previous_filename"] for f in batch if f.get("previous_filename")]
+                      if len(batch) < 100:
+                          break
+                  if len({f for f in files}) < expected:
+                      raise RuntimeError(f"API listed fewer files than the PR changes ({expected})")
+                  return files
+              if event_name == "merge_group":
+                  mg = event["merge_group"]
+                  data = api_get(f"{api}/repos/{repo}/compare/{mg['base_sha']}...{mg['head_sha']}")
+                  if len(data.get("files", [])) >= 300:
+                      raise RuntimeError("compare API truncates at 300 files")
+                  return [f["filename"] for f in data["files"]] + [
+                      f["previous_filename"] for f in data["files"] if f.get("previous_filename")]
+              raise RuntimeError(f"no diff source for event {event_name}")
+
+
+          def classify(config, event_name, event, config_path, full_on_push, get_files):
+              profiles = config.get("profiles", {})
+              base_jobs = list(config.get("base", []))
+              names = sorted(profiles)
+
+              def jobs_for(selected):
+                  jobs = list(base_jobs)
+                  for name in names:
+                      if name in selected:
+                          jobs += [j for j in profiles[name].get("adds", []) if j != "all-profiles"]
+                  return list(dict.fromkeys(jobs))
+
+              def everything(primary, reason):
+                  return {"profile": primary, "profiles": names, "jobs": jobs_for(set(names)),
+                          "all": True, "docs-only": False, "reason": reason}
+
+              if event_name in ("push", "schedule", "workflow_dispatch"):
+                  if full_on_push:
+                      return everything("full", f"full run on {event_name}")
+              elif event_name not in ("pull_request", "merge_group"):
+                  return everything("full", f"unsupported event {event_name}: fail closed")
+
+              pr = event.get("pull_request") or {}
+              ctx = {
+                  "event": event_name,
+                  "head": (pr.get("head") or {}).get("ref") or (event.get("merge_group") or {}).get("head_ref", ""),
+                  "base": (pr.get("base") or {}).get("ref") or (event.get("merge_group") or {}).get("base_ref", ""),
+                  "labels": [label["name"] for label in pr.get("labels", [])],
+              }
+              for prefix in ("refs/heads/",):
+                  for key in ("head", "base"):
+                      if ctx[key].startswith(prefix):
+                          ctx[key] = ctx[key][len(prefix):]
+
+              selected = set()
+              for name in names:
+                  spec = profiles[name]
+                  conds = spec.get("match", DEFAULT_MATCH.get(name, []))
+                  if any(condition_holds(c, ctx) for c in conds):
+                      selected.add(name)
+                      implies_all = spec.get("all", name in FULL_BY_DEFAULT) or "all-profiles" in spec.get("adds", [])
+                      if implies_all:
+                          return everything(name, f"profile {name} matched by branch or label")
+
+              try:
+                  files = get_files()
+              except Exception as exc:  # noqa: BLE001 - any diff error fails closed
+                  return everything("full", f"diff error ({exc}): fail closed")
+              if not files:
+                  return everything("full", "empty diff: fail closed")
+              if config_path in files:
+                  return everything("full", f"{config_path} changed: fail closed")
+
+              for path in files:
+                  hit = [n for n in names if profiles[n].get("paths") and matches(path, profiles[n]["paths"])]
+                  if not hit:
+                      return everything("full", f"{path} is outside every profile: fail closed")
+                  selected.update(hit)
+
+              primary = next((p for p in PRECEDENCE if p in selected), None)
+              docs_only = selected == {"docs"}
+              if primary is None:
+                  primary = "docs" if docs_only else "code"
+              return {"profile": primary, "profiles": sorted(selected), "jobs": jobs_for(selected),
+                      "all": False, "docs-only": docs_only,
+                      "reason": f"{len(files)} changed file(s) matched {', '.join(sorted(selected))}"}
+
+
+          def main():
+              event_name = os.environ.get("GITHUB_EVENT_NAME", "")
+              with open(os.environ["GITHUB_EVENT_PATH"], encoding="utf-8") as fh:
+                  event = json.load(fh)
+              config_path = os.environ.get("CONFIG_PATH", ".github/ci-profile.json")
+              full_on_push = os.environ.get("FULL_ON_PUSH", "true") == "true"
+              try:
+                  with open(config_path, encoding="utf-8") as fh:
+                      config = json.load(fh)
+                  if not isinstance(config.get("profiles"), dict):
+                      raise ValueError("'profiles' must be an object")
+              except Exception as exc:  # noqa: BLE001 - config errors fail closed
+                  config = {"base": [], "profiles": {}}
+                  result = {"profile": "full", "profiles": [], "jobs": [], "all": True, "docs-only": False,
+                            "reason": f"cannot read {config_path} ({exc}): fail closed"}
+              else:
+                  result = classify(config, event_name, event, config_path, full_on_push,
+                                    lambda: changed_files(event_name, event))
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+                  out.write(f"profile={result['profile']}\n")
+                  out.write(f"profiles={json.dumps(result['profiles'])}\n")
+                  out.write(f"jobs={json.dumps(result['jobs'])}\n")
+                  out.write(f"all={'true' if result['all'] else 'false'}\n")
+                  out.write(f"docs-only={'true' if result['docs-only'] else 'false'}\n")
+                  out.write(f"reason={result['reason'].replace(chr(10), ' ')}\n")
+              summary = os.environ.get("GITHUB_STEP_SUMMARY")
+              if summary:
+                  with open(summary, "a", encoding="utf-8") as out:
+                      out.write(f"### classify: `{result['profile']}`\n\n{result['reason']}\n\n"
+                                f"- all: `{result['all']}`\n- profiles: `{', '.join(result['profiles'])}`\n"
+                                f"- jobs: `{', '.join(result['jobs'])}`\n")
+              print(json.dumps(result, indent=2))
+
+
+          if __name__ == "__main__":
+              sys.exit(main())

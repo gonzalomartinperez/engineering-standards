@@ -1,0 +1,78 @@
+# Composite action: the single required check, fail-closed (ecosystem standard 6.1).
+#
+# Use it in a caller job literally named `ci-gate` so the required status check is exactly `ci-gate`
+# (a reusable workflow would surface as `ci-gate / <job>`; see docs/decisions/0001).
+#
+#   ci-gate:
+#     if: always()
+#     needs: [classify, lint, test]          # every other job of the workflow
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 2
+#     permissions: {}
+#     steps:
+#       - uses: gonzalomartinperez/engineering-standards/actions/ci-gate@<sha> # vX.Y.Z
+#         with:
+#           needs: ${{ toJSON(needs) }}
+name: ci-gate
+description: Fail-closed aggregation of the results of every needed job.
+inputs:
+  needs:
+    description: The calling job's `toJSON(needs)`.
+    required: true
+  required:
+    description: Comma-separated job ids that must succeed and may never be skipped.
+    required: false
+    default: classify
+runs:
+  using: composite
+  steps:
+    - name: Aggregate job results
+      shell: python
+      env:
+        NEEDS_JSON: ${{ inputs.needs }}
+        REQUIRED_JOBS: ${{ inputs.required }}
+      run: |
+        # ci-gate v1 — tests extract and run this block.
+        import json, os, sys
+
+
+        def evaluate(needs_json, required_csv):
+            try:
+                needs = json.loads(needs_json)
+            except ValueError as exc:
+                return False, [f"needs is not valid JSON ({exc})"]
+            if not isinstance(needs, dict) or not needs:
+                return False, ["needs is empty: the gate must list every job (fail closed)"]
+            required = {j.strip() for j in required_csv.split(",") if j.strip()}
+            ok, lines = True, []
+            for job in sorted(needs):
+                result = (needs[job] or {}).get("result", "missing")
+                if result == "success":
+                    verdict = "pass"
+                elif result == "skipped" and job not in required:
+                    verdict = "pass (not applicable)"
+                else:
+                    verdict, ok = "FAIL", False
+                lines.append(f"| `{job}` | {result} | {verdict} |")
+            missing = sorted(required - set(needs))
+            for job in missing:
+                ok = False
+                lines.append(f"| `{job}` | not in needs | FAIL |")
+            return ok, lines
+
+
+        def main():
+            ok, lines = evaluate(os.environ.get("NEEDS_JSON", ""), os.environ.get("REQUIRED_JOBS", ""))
+            table = "\n".join(["| Job | Result | Gate |", "|---|---|---|", *lines]) if lines and lines[0].startswith("|") else "\n".join(lines)
+            summary = os.environ.get("GITHUB_STEP_SUMMARY")
+            if summary:
+                with open(summary, "a", encoding="utf-8") as out:
+                    out.write(f"### ci-gate: {'green' if ok else 'red'}\n\n{table}\n")
+            print(table)
+            if not ok:
+                print("::error title=ci-gate::a needed job failed, was cancelled, or a required job was skipped")
+            return 0 if ok else 1
+
+
+        if __name__ == "__main__":
+            sys.exit(main())
