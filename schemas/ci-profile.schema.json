@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gonzalomartinperez/engineering-standards/schemas/ci-profile.schema.json",
+  "title": "ci-profile.json",
+  "description": "CI profile map read by the classify reusable workflow (ecosystem 6.0). Fail closed: a changed file outside every profile runs everything.",
+  "type": "object",
+  "required": [
+    "version",
+    "profiles"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "$comment": {
+      "type": "string"
+    },
+    "version": {
+      "const": 1
+    },
+    "base": {
+      "description": "Jobs that always run (every profile).",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/profile"
+      }
+    },
+    "notApplicable": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "failClosed": {
+      "type": "string"
+    },
+    "required": {
+      "const": "ci-gate"
+    },
+    "scheduled": {
+      "type": "object"
+    }
+  },
+  "$defs": {
+    "condition": {
+      "type": "object",
+      "description": "All keys must hold (AND); values inside a key are alternatives (OR).",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "branches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Globs on the PR head branch."
+        },
+        "base": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Globs on the PR base branch."
+        },
+        "labels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Globs (** crosses directories, * stays in one segment)."
+        },
+        "match": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/condition"
+          },
+          "description": "Alternatives (OR). Defaults exist for deps-weekly, release and hotfix."
+        },
+        "adds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Job names; 'all-profiles' runs everything."
+        },
+        "all": {
+          "type": "boolean",
+          "description": "A match runs everything (default true for deps-weekly and release)."
+        },
+        "trigger": {
+          "type": "string",
+          "description": "Human description of a non-path trigger."
+        },
+        "budgetP50Minutes": {
+          "type": "number",
+          "minimum": 0
+        },
+        "budgetP95Minutes": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "paths"
+          ]
+        },
+        {
+          "required": [
+            "match"
+          ]
+        },
+        {
+          "required": [
+            "trigger"
+          ]
+        }
+      ]
+    }
+  }
+}

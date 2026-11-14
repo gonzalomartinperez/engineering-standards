@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/gonzalomartinperez/engineering-standards/schemas/standards-lock.schema.json",
+  "title": "standards.lock",
+  "description": "Pins an adopter repository to an engineering-standards release and lists its byte-matched copies.",
+  "type": "object",
+  "required": [
+    "standards",
+    "flow",
+    "files",
+    "checks"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "standards": {
+      "type": "object",
+      "required": [
+        "repository",
+        "tag",
+        "commit"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "repository": {
+          "const": "gonzalomartinperez/engineering-standards"
+        },
+        "tag": {
+          "type": "string",
+          "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "flow": {
+      "enum": [
+        "release",
+        "main-only"
+      ]
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "template"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^[^/]"
+          },
+          "template": {
+            "type": "string",
+            "pattern": "^(templates|standard|harness)/"
+          }
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "dependabot-policy",
+          "workflow-pins"
+        ]
+      },
+      "uniqueItems": true,
+      "minItems": 1
+    }
+  }
+}

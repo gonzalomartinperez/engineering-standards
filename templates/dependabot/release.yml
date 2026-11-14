@@ -1,0 +1,53 @@
+# Weekly single dependency PR (ecosystem standard section 5) — release flow, target develop.
+# Shape verified on 2026-11-14 in the dependabot-sandbox proof (docs/decisions/0002).
+# Keep the group block as is; delete the updates entries for ecosystems the repository does not use
+# and add one entry per extra manifest directory (same keys). Checked by standards-drift
+# (dependabot-policy): group-level limit and commit-message, semver cooldowns only for npm/uv.
+version: 2
+multi-ecosystem-groups:
+  weekly:
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: America/Argentina/Buenos_Aires
+    target-branch: develop
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: "chore(deps)"
+    labels: ["dependencies"]
+updates:
+  - package-ecosystem: npm
+    directory: /
+    multi-ecosystem-group: weekly
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-patch-days: 3
+  - package-ecosystem: uv
+    directory: /
+    multi-ecosystem-group: weekly
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-patch-days: 3
+  - package-ecosystem: github-actions
+    directory: /
+    multi-ecosystem-group: weekly
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+  - package-ecosystem: docker
+    directory: /
+    multi-ecosystem-group: weekly
+    patterns: ["*"]
+    cooldown:
+      default-days: 7
+  - package-ecosystem: docker-compose
+    directory: /
+    multi-ecosystem-group: weekly
+    patterns: ["*"]
+    cooldown:
+      default-days: 7

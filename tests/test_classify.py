@@ -194,6 +194,18 @@ class MainEntryPointTests(unittest.TestCase):
     def test_profile_without_paths_or_match_fails_the_job(self):
         self.assertEqual(self._run_main("push", {}, {"profiles": {"tools": {"adds": ["x"]}}})[0], 1)
 
+    def test_trigger_only_profile_is_accepted_and_never_matches_alone(self):
+        config = {"base": [], "profiles": {"docs": {"paths": ["**/*.md"]}, "week-close": {"trigger": "label week-close", "adds": ["x"]}}}
+        self.assertEqual(self._run_main("push", {}, config)[0], 0)
+        r = M.classify(config, "pull_request", pr_event(labels=["week-close"]), "c.json", lambda: ["a.md"])
+        self.assertEqual(r["profiles"], ["docs"])
+
+    def test_marketing_profile_map_loads(self):
+        path = ROOT.parent / "pequeverso-marketing" / "docs" / "master-plan" / "ci-profile.json"
+        if not path.exists():
+            self.skipTest("sibling checkout not present")
+        self.assertIn("docs", M.load_config(str(path))["profiles"])
+
 
 class OwnProfileMapTests(unittest.TestCase):
     """Every tracked file of this repository falls inside a profile (no accidental full runs)."""

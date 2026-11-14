@@ -1,0 +1,44 @@
+{
+  "$comment": "Byte-matched templates: standards_drift.py init copies these and drift fails when a copy differs. Edit a template only through a standards release (minor version).",
+  "files": [
+    {
+      "template": "templates/community/SECURITY.md",
+      "path": "SECURITY.md"
+    },
+    {
+      "template": "templates/community/SUPPORT.md",
+      "path": "SUPPORT.md"
+    },
+    {
+      "template": "templates/community/CODE_OF_CONDUCT.md",
+      "path": "CODE_OF_CONDUCT.md",
+      "visibility": [
+        "public"
+      ]
+    },
+    {
+      "template": "templates/github/PULL_REQUEST_TEMPLATE.md",
+      "path": ".github/PULL_REQUEST_TEMPLATE.md"
+    },
+    {
+      "template": "templates/github/ISSUE_TEMPLATE/bug.yml",
+      "path": ".github/ISSUE_TEMPLATE/bug.yml"
+    },
+    {
+      "template": "templates/github/ISSUE_TEMPLATE/feature.yml",
+      "path": ".github/ISSUE_TEMPLATE/feature.yml"
+    },
+    {
+      "template": "templates/github/ISSUE_TEMPLATE/config.yml",
+      "path": ".github/ISSUE_TEMPLATE/config.yml"
+    },
+    {
+      "template": "standard/ecosystem.md",
+      "path": "docs/master-plan/ecosystem.md"
+    },
+    {
+      "template": "standard/rubrics.md",
+      "path": "docs/master-plan/rubrics.md"
+    }
+  ]
+}

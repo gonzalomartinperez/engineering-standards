@@ -67,6 +67,10 @@ jobs:
           shopt -s nullglob
           files=(scripts/*.sh harness/hooks/*.sh)
           if [ ${#files[@]} -gt 0 ]; then shellcheck "${files[@]}"; else echo "no shell scripts"; fi
+      - name: JSON schemas
+        run: |
+          uvx check-jsonschema==0.39.0 --schemafile schemas/ci-profile.schema.json .github/ci-profile.json
+          uvx check-jsonschema==0.39.0 --check-metaschema schemas/*.schema.json
       - name: JSON files parse
         run: find . -name '*.json' -not -path './node_modules/*' -print0 | xargs -0 -n1 python3 -m json.tool --no-ensure-ascii > /dev/null
 
