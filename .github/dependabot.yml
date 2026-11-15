@@ -15,9 +15,12 @@ multi-ecosystem-groups:
     labels: ["dependencies"]
 updates:
   - package-ecosystem: github-actions
+    # Explicit list: the "/actions/*" glob made the first update job abort with "not found".
     directories:
       - /
-      - /actions/*
+      - /actions/ci-gate
+      - /actions/setup-node
+      - /actions/setup-python-uv
     multi-ecosystem-group: weekly
     patterns: ["*"]
     cooldown:
